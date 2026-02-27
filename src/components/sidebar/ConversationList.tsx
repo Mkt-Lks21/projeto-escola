@@ -22,7 +22,7 @@ export default function ConversationList({
 }: ConversationListProps) {
   return (
     <div className="flex flex-col h-full">
-      <div className="p-4 border-b">
+      <div className="p-4 border-b border-white/35">
         <Button onClick={onNew} className="w-full" variant="outline">
           <Plus className="w-4 h-4 mr-2" />
           Nova Conversa
@@ -39,8 +39,8 @@ export default function ConversationList({
             <div
               key={conversation.id}
               className={cn(
-                "group flex items-center gap-2 p-2 rounded-lg cursor-pointer hover:bg-accent transition-colors",
-                currentConversationId === conversation.id && "bg-accent"
+                "group flex items-center gap-2 p-2 rounded-lg cursor-pointer hover:bg-white/40 transition-colors",
+                currentConversationId === conversation.id && "bg-white/50"
               )}
               onClick={() => onSelect(conversation.id)}
             >
