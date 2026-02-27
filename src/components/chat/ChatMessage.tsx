@@ -10,6 +10,7 @@ import QueryResultTable from "./QueryResultTable";
 import Plot from "react-plotly.js";
 import type { Config as PlotlyConfig, Data as PlotlyData, Layout as PlotlyLayout } from "plotly.js";
 import { ParsedSqlBlock, parseAssistantContent } from "@/lib/chat/assistantContentParser";
+import { useLocation } from "react-router-dom";
 
 interface ChatMessageProps {
   message: Message;
@@ -28,8 +29,21 @@ export default function ChatMessage({
   const [attemptedQueries, setAttemptedQueries] = useState<Set<string>>(new Set());
   const runningQueriesRef = useRef<Set<string>>(new Set());
   const autoAttemptedRef = useRef<Set<string>>(new Set());
+  const location = useLocation();
 
   const isUser = message.role === "user";
+  const showSqlDebug = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    const rawValue =
+      params.get("debugSql") ??
+      params.get("sqlDebug") ??
+      params.get("showSql") ??
+      params.get("devSql") ??
+      "";
+
+    const value = rawValue.toLowerCase();
+    return value === "1" || value === "true" || value === "yes";
+  }, [location.search]);
   const parsedContent = useMemo(
     () => (isUser ? null : parseAssistantContent(message.content || "")),
     [isUser, message.content],
@@ -151,6 +165,10 @@ export default function ChatMessage({
           </div>
         ) : sqlBlocks.length > 0 ? (
           <div className="space-y-4">
+            {plainAssistantText && (
+              <p className="text-sm leading-6 whitespace-pre-wrap break-words">{plainAssistantText}</p>
+            )}
+
             {sqlBlocks.map((block, index) => {
               const key = toBlockKey(block);
               const isExecuting = Boolean(executingQueries[key]);
@@ -161,7 +179,8 @@ export default function ChatMessage({
                 <div key={key} className="rounded-2xl glass-card overflow-hidden">
                   <div className="px-3 py-2 border-b border-white/35 glass-subtle flex items-center justify-between gap-2">
                     <div className="text-xs font-semibold text-muted-foreground">
-                      SQL {index + 1} {block.autoExecute ? "(Auto)" : ""}
+                      {showSqlDebug ? `SQL ${index + 1}` : `Consulta ${index + 1}`}{" "}
+                      {block.autoExecute ? "(Auto)" : ""}
                     </div>
                     <div className="flex items-center gap-1">
                       <Button
@@ -178,25 +197,29 @@ export default function ChatMessage({
                         )}
                         {hasResults ? "Reexecutar" : "Executar"}
                       </Button>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        className="h-7 text-xs"
-                        onClick={() => void handleCopy(block.query)}
-                      >
-                        {copiedCode === block.query ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                      </Button>
+                      {showSqlDebug && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-7 text-xs"
+                          onClick={() => void handleCopy(block.query)}
+                        >
+                          {copiedCode === block.query ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                        </Button>
+                      )}
                     </div>
                   </div>
 
-                  <SyntaxHighlighter
-                    style={vscDarkPlus}
-                    language="sql"
-                    PreTag="div"
-                    className="!m-0 !rounded-none"
-                  >
-                    {block.query}
-                  </SyntaxHighlighter>
+                  {showSqlDebug && (
+                    <SyntaxHighlighter
+                      style={vscDarkPlus}
+                      language="sql"
+                      PreTag="div"
+                      className="!m-0 !rounded-none"
+                    >
+                      {block.query}
+                    </SyntaxHighlighter>
+                  )}
 
                   <div className="px-3 pb-3">
                     <QueryResultTable
