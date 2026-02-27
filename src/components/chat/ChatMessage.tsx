@@ -35,8 +35,8 @@ export default function ChatMessage({
   const showSqlDebug = useMemo(() => {
     const params = new URLSearchParams(location.search);
     const rawValue =
-      params.get("debugSql") ??
       params.get("sqlDebug") ??
+      params.get("debugSql") ??
       params.get("showSql") ??
       params.get("devSql") ??
       "";
@@ -75,7 +75,7 @@ export default function ChatMessage({
   };
 
   useEffect(() => {
-    if (isUser || disableAutoExecute || !parsedContent) return;
+    if (isUser || disableAutoExecute || !parsedContent || !showSqlDebug || !parsedContent.allowSqlDebug) return;
 
     for (const block of parsedContent.sqlBlocks) {
       if (!block.autoExecute) continue;
@@ -88,7 +88,7 @@ export default function ChatMessage({
       autoAttemptedRef.current.add(key);
       void executeSql(block, false);
     }
-  }, [disableAutoExecute, isUser, parsedContent]);
+  }, [disableAutoExecute, isUser, parsedContent, showSqlDebug]);
 
   const handleCopy = async (code: string) => {
     await navigator.clipboard.writeText(code);
@@ -99,6 +99,8 @@ export default function ChatMessage({
 
   const plainAssistantText = parsedContent?.plainText || "";
   const sqlBlocks = parsedContent?.sqlBlocks || [];
+  const allowSqlDebug = parsedContent?.allowSqlDebug || false;
+  const canRenderSql = showSqlDebug && allowSqlDebug;
   const isChartContent = parsedContent?.isChartContent || false;
   const chartPayload = parsedContent?.chartPayload || null;
   const plotData = Array.isArray(chartPayload?.plotly_figure?.data)
@@ -163,7 +165,7 @@ export default function ChatMessage({
               </div>
             )}
           </div>
-        ) : sqlBlocks.length > 0 ? (
+        ) : sqlBlocks.length > 0 && canRenderSql ? (
           <div className="space-y-4">
             {plainAssistantText && (
               <p className="text-sm leading-6 whitespace-pre-wrap break-words">{plainAssistantText}</p>
@@ -179,7 +181,7 @@ export default function ChatMessage({
                 <div key={key} className="rounded-2xl glass-card overflow-hidden">
                   <div className="px-3 py-2 border-b border-white/35 glass-subtle flex items-center justify-between gap-2">
                     <div className="text-xs font-semibold text-muted-foreground">
-                      {showSqlDebug ? `SQL ${index + 1}` : `Consulta ${index + 1}`}{" "}
+                      {canRenderSql ? `SQL ${index + 1}` : `Consulta ${index + 1}`}{" "}
                       {block.autoExecute ? "(Auto)" : ""}
                     </div>
                     <div className="flex items-center gap-1">
@@ -197,7 +199,7 @@ export default function ChatMessage({
                         )}
                         {hasResults ? "Reexecutar" : "Executar"}
                       </Button>
-                      {showSqlDebug && (
+                      {canRenderSql && (
                         <Button
                           size="sm"
                           variant="secondary"
@@ -210,7 +212,7 @@ export default function ChatMessage({
                     </div>
                   </div>
 
-                  {showSqlDebug && (
+                  {canRenderSql && (
                     <SyntaxHighlighter
                       style={vscDarkPlus}
                       language="sql"
@@ -234,7 +236,7 @@ export default function ChatMessage({
           </div>
         ) : (
           <p className="text-sm leading-6 whitespace-pre-wrap break-words">
-            {plainAssistantText || "Sem conteudo para exibir."}
+            {plainAssistantText || (sqlBlocks.length > 0 ? "Conteudo tecnico oculto." : "Sem conteudo para exibir.")}
           </p>
         )}
       </div>
