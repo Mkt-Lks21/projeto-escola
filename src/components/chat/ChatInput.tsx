@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, KeyboardEvent } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { Send, Database } from "lucide-react";
+import { Send } from "lucide-react";
 
 interface ChatInputProps {
   onSend: (message: string) => void;
@@ -34,30 +34,19 @@ export default function ChatInput({ onSend, isLoading }: ChatInputProps) {
   };
 
   return (
-    <div className="border-t p-4 bg-background">
-      <div className="max-w-4xl mx-auto space-y-2">
+    <div className="absolute inset-x-0 bottom-0 z-20 pointer-events-none p-4">
+      <div className="pointer-events-auto max-w-4xl mx-auto space-y-2 glass-subtle rounded-2xl p-3 shadow-[0_18px_45px_rgba(0,0,0,0.14)] border border-white/45">
         <div className="flex gap-2">
-          <div className="relative flex-1">
+          <div className="flex-1">
             <Textarea
               ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Pergunte algo sobre seu banco de dados..."
-              className="min-h-[44px] max-h-[200px] resize-none pr-44"
+              className="min-h-[44px] max-h-[200px] resize-none bg-transparent border-white/40"
               disabled={isLoading}
             />
-            <div className="absolute right-2 bottom-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs gap-1 bg-background"
-                disabled
-              >
-                <Database className="w-3 h-3" />
-                Supabase Externo (public)
-              </Button>
-            </div>
           </div>
           <Button
             onClick={handleSend}

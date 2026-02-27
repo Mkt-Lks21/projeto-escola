@@ -41,8 +41,8 @@ export default function AgentDetail() {
   if (!agent) return null;
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="flex items-center gap-3 px-6 py-4 border-b">
+    <div className="min-h-screen bg-background relative z-10">
+      <header className="mx-4 mt-4 flex items-center gap-3 px-6 py-4 rounded-2xl glass-panel">
         <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </Link>
@@ -51,7 +51,7 @@ export default function AgentDetail() {
       </header>
 
       <main className="max-w-2xl mx-auto px-6 py-8 space-y-6">
-        <div className="flex items-start gap-4">
+        <div className="flex items-start gap-4 glass-panel rounded-2xl p-4">
           <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-primary/15">
             <Bot className="h-7 w-7 text-primary" />
           </div>
@@ -64,7 +64,7 @@ export default function AgentDetail() {
         </div>
 
         {/* Prompt */}
-        <div className="rounded-lg border bg-card p-4">
+        <div className="rounded-2xl glass-card p-4">
           <h3 className="font-semibold mb-2">Prompt</h3>
           <p className="text-sm text-muted-foreground whitespace-pre-wrap">
             {agent.system_prompt || "Usando prompt padrão de analista de negócios."}
@@ -72,7 +72,7 @@ export default function AgentDetail() {
         </div>
 
         {/* Tables */}
-        <div className="rounded-lg border bg-card p-4">
+        <div className="rounded-2xl glass-card p-4">
           <h3 className="font-semibold mb-2">Tabelas ({tables.length})</h3>
           <div className="space-y-1">
             {tables.map((t) => (

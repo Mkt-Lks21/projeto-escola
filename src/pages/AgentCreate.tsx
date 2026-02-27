@@ -15,7 +15,7 @@ export default function AgentCreate() {
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [systemmer, setSystemPrompt] = useState("");
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
   const [availableTables, setAvailableTables] = useState<{ schema: string; table: string }[]>([]);
   const [saving, setSaving] = useState(false);
@@ -83,8 +83,8 @@ export default function AgentCreate() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="flex items-center gap-3 px-6 py-4 border-b">
+    <div className="min-h-screen bg-background relative z-10">
+      <header className="mx-4 mt-4 flex items-center gap-3 px-6 py-4 rounded-2xl glass-panel">
         <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </Link>
@@ -93,7 +93,7 @@ export default function AgentCreate() {
       </header>
 
       <main className="max-w-2xl mx-auto px-6 py-8 space-y-6">
-        <div className="flex items-center gap-3 mb-2">
+        <div className="flex items-center gap-3 mb-2 glass-panel rounded-2xl p-4">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15">
             <Bot className="h-6 w-6 text-primary" />
           </div>
@@ -148,7 +148,7 @@ export default function AgentCreate() {
           <p className="text-xs text-muted-foreground">
             Selecione as tabelas que este agente poderá consultar.
           </p>
-          <div className="rounded-lg border bg-card p-4 max-h-[300px] overflow-y-auto space-y-2">
+          <div className="rounded-2xl glass-card p-4 max-h-[300px] overflow-y-auto space-y-2">
             {availableTables.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 Nenhuma tabela disponível. Sincronize os metadados na aba Admin.
@@ -159,7 +159,7 @@ export default function AgentCreate() {
                 return (
                   <label
                     key={key}
-                    className="flex items-center gap-3 rounded-md px-3 py-2 hover:bg-secondary/50 cursor-pointer transition-colors"
+                    className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-white/40 cursor-pointer transition-colors"
                   >
                     <Checkbox
                       checked={selectedTables.has(key)}

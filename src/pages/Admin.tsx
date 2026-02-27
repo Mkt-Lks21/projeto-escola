@@ -149,9 +149,9 @@ export default function Admin() {
   const models = selectedProvider === "openai" ? OPENAI_MODELS : GOOGLE_MODELS;
 
   return (
-    <div className="flex-1 p-6 overflow-y-auto">
+    <div className="flex-1 p-6 overflow-y-auto relative z-10">
       <div className="max-w-4xl mx-auto space-y-6">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 glass-panel rounded-2xl p-4">
           <Button
             variant="ghost"
             size="icon"
@@ -169,7 +169,7 @@ export default function Admin() {
         </div>
 
         <Tabs defaultValue="llm" className="space-y-4">
-          <TabsList>
+          <TabsList className="glass-subtle rounded-2xl p-1">
             <TabsTrigger value="llm" className="gap-2">
               <Key className="w-4 h-4" />
               LLM
@@ -345,7 +345,7 @@ export default function Admin() {
                               {Object.entries(tables).map(([table, columns]) => (
                                 <div
                                   key={table}
-                                  className="border rounded-lg p-4 bg-muted/30"
+                                  className="rounded-2xl glass-subtle p-4"
                                 >
                                   <h4 className="font-medium mb-2">{table}</h4>
                                   <div className="flex flex-wrap gap-2">
@@ -413,7 +413,7 @@ export default function Admin() {
                           {Object.entries(tables).map(([table, columns]) => (
                             <div
                               key={table}
-                              className="border rounded-lg p-4 bg-muted/30"
+                              className="rounded-2xl glass-subtle p-4"
                             >
                               <h4 className="font-medium mb-2">{table}</h4>
                               <div className="flex flex-wrap gap-2">
