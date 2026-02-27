@@ -19,6 +19,7 @@ export interface ParsedAssistantContent {
   sqlBlocks: ParsedSqlBlock[];
   isChartContent: boolean;
   chartPayload: ParsedChartPayload | null;
+  allowSqlDebug: boolean;
 }
 
 const SQL_FENCE_REGEX = /```(?:sql|postgres|postgresql)?\s*([\s\S]*?)```/gi;
@@ -33,11 +34,33 @@ function normalizeQuery(query: string): string {
   return sanitizeSql(query).replace(/\s+/g, " ").toLowerCase();
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function removeAutoExecuteSqlFromText(text: string, blocks: ParsedSqlBlock[]): string {
+  let output = text;
+
+  for (const block of blocks) {
+    const query = block.query.trim();
+    if (!query) continue;
+
+    const flexibleQueryPattern = escapeRegExp(query).replace(/\s+/g, "\\s+");
+    output = output.replace(new RegExp(flexibleQueryPattern, "i"), "");
+  }
+
+  output = output.replace(/\[AUTO_EXECUTE\]\s*```(?:sql|postgres|postgresql)?\s*[\s\S]*?```/gi, "");
+  output = output.replace(/\[AUTO_EXECUTE\]\s*(?:SELECT|WITH)[\s\S]*?(?=\n{2,}|$)/gi, "");
+  output = output.replace(/\[AUTO_EXECUTE\]/gi, "");
+  return output;
+}
+
 function stripMarkdownToPlainText(text: string): string {
   let output = text;
 
   output = output.replace(SQL_FENCE_REGEX, "");
   output = output.replace(AUTO_EXECUTE_REGEX, "");
+  output = output.replace(/\[SQL_DEBUG_ALLOWED\]/gi, "");
   output = output.replace(/\[RESULTADO_DA_QUERY\]/gi, "");
   output = output.replace(/`([^`]+)`/g, "$1");
   output = output.replace(/\*\*([^*]+)\*\*/g, "$1");
@@ -203,7 +226,9 @@ function parseChartPayload(raw: string): ParsedChartPayload | null {
 
 export function parseAssistantContent(content: string): ParsedAssistantContent {
   const raw = (content || "").replace(/\[RESULTADO_DA_QUERY\]/gi, "");
-  const trimmed = raw.trimStart();
+  const allowSqlDebug = /\[SQL_DEBUG_ALLOWED\]/i.test(raw);
+  const cleanedRaw = raw.replace(/\[SQL_DEBUG_ALLOWED\]/gi, "");
+  const trimmed = cleanedRaw.trimStart();
   const isChartContent = trimmed.startsWith(CHART_CONTENT_TAG);
 
   if (isChartContent) {
@@ -211,29 +236,34 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
       plainText: "",
       sqlBlocks: [],
       isChartContent: true,
-      chartPayload: parseChartPayload(raw),
+      chartPayload: parseChartPayload(cleanedRaw),
+      allowSqlDebug: false,
     };
   }
 
   const blocks: ParsedSqlBlock[] = [];
   const indexByNormalizedQuery = new Map<string, number>();
 
-  extractSqlCodeBlocks(raw, blocks, indexByNormalizedQuery);
-  extractAutoExecuteSql(raw, blocks, indexByNormalizedQuery);
+  extractSqlCodeBlocks(cleanedRaw, blocks, indexByNormalizedQuery);
+  extractAutoExecuteSql(cleanedRaw, blocks, indexByNormalizedQuery);
+
+  const withoutSqlSnippets = removeAutoExecuteSqlFromText(cleanedRaw, blocks);
 
   if (blocks.length > 0) {
     return {
-      plainText: stripMarkdownToPlainText(raw),
+      plainText: stripMarkdownToPlainText(withoutSqlSnippets),
       sqlBlocks: blocks,
       isChartContent: false,
       chartPayload: null,
+      allowSqlDebug,
     };
   }
 
   return {
-    plainText: stripMarkdownToPlainText(raw),
+    plainText: stripMarkdownToPlainText(cleanedRaw),
     sqlBlocks: [],
     isChartContent: false,
     chartPayload: null,
+    allowSqlDebug: false,
   };
 }
