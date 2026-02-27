@@ -1,12 +1,15 @@
+import { useEffect, useMemo, useState } from "react";
 import { useChat } from "@/hooks/useChat";
 import AppSidebar from "@/components/sidebar/AppSidebar";
 import ChatMessages from "@/components/chat/ChatMessages";
 import ChatInput from "@/components/chat/ChatInput";
-import { executeExternalQuery } from "@/lib/api";
+import { executeQuery, getAgentTables } from "@/lib/api";
 import { useParams } from "react-router-dom";
+import { AgentTable } from "@/types/database";
 
 export default function Chat() {
   const { agentId } = useParams<{ agentId?: string }>();
+  const [agentTables, setAgentTables] = useState<AgentTable[]>([]);
   const {
     conversations,
     currentConversationId,
@@ -19,12 +22,65 @@ export default function Chat() {
     createNewConversation,
   } = useChat(agentId);
 
+  useEffect(() => {
+    if (!agentId) {
+      setAgentTables([]);
+      return;
+    }
+
+    let isActive = true;
+    const loadTables = async () => {
+      try {
+        const tables = await getAgentTables(agentId);
+        if (isActive) setAgentTables(tables || []);
+      } catch {
+        if (isActive) setAgentTables([]);
+      }
+    };
+
+    loadTables();
+    return () => {
+      isActive = false;
+    };
+  }, [agentId]);
+
   const handleExecuteQuery = async (query: string) => {
-    return await executeExternalQuery(query);
+    return await executeQuery(query);
   };
 
+  const greeting = useMemo(() => {
+    const name = "Arquem";
+    const variants = [
+      "Como posso te ajudar hoje?",
+      "No que voce precisa hoje?",
+      "Que insight do seu banco voce quer ver?",
+    ];
+    const index = Math.floor(Math.random() * variants.length);
+    return { title: `Ola, ${name}.`, subtitle: variants[index] };
+  }, []);
+
+  const suggestions = useMemo(() => {
+    const fallback = [
+      "Quais tabelas existem no banco?",
+      "Mostre os ultimos 10 registros de uma tabela.",
+      "Quais metricas principais posso acompanhar aqui?",
+    ];
+
+    if (!agentTables.length) return fallback;
+
+    const toName = (table: AgentTable) => `${table.schema_name}.${table.table_name}`;
+    const tableNames = agentTables.slice(0, 3).map(toName);
+    const pick = (index: number) => tableNames[index] || tableNames[0];
+
+    return [
+      `Quais insights principais existem na tabela ${pick(0)}?`,
+      `Mostre os 10 registros mais recentes de ${pick(1)}.`,
+      `Resuma os principais indicadores de ${pick(2)} por mes.`,
+    ];
+  }, [agentTables]);
+
   return (
-    <div className="flex h-screen bg-background">
+    <div className="flex h-screen bg-background p-4 gap-4 relative z-10">
       <AppSidebar
         conversations={conversations}
         currentConversationId={currentConversationId}
@@ -34,19 +90,20 @@ export default function Chat() {
         agentId={agentId}
       />
 
-      <main className="flex-1 flex flex-col">
+      <main className="flex-1 flex flex-col glass-panel rounded-2xl overflow-hidden relative z-10">
         <ChatMessages
           messages={messages}
           isLoading={isLoading}
           streamingContent={streamingContent}
           onExecuteQuery={handleExecuteQuery}
+          emptyGreeting={greeting}
+          suggestions={suggestions}
+          onSuggestionClick={sendMessage}
         />
 
-        <ChatInput
-          onSend={sendMessage}
-          isLoading={isLoading}
-        />
+        <ChatInput onSend={sendMessage} isLoading={isLoading} />
       </main>
     </div>
   );
 }
+

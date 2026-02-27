@@ -7,9 +7,9 @@ export default function Home() {
   const { agents, loading, remove } = useAgents();
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="min-h-screen bg-background flex flex-col relative z-10">
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 border-b">
+      <header className="mx-4 mt-4 flex items-center justify-between px-6 py-4 rounded-2xl glass-panel">
         <div className="flex items-center gap-2">
           <Database className="w-6 h-6 text-primary" />
           <span className="font-semibold text-lg">DB Analyst</span>
@@ -34,7 +34,7 @@ export default function Home() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 w-full max-w-xl mb-14">
           <Link
             to="/chat"
-            className="group rounded-xl border bg-card p-6 text-center transition-colors hover:border-primary/40"
+            className="group rounded-2xl glass-card glass-hover p-6 text-center"
           >
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/15">
               <MessageSquare className="h-7 w-7 text-primary" />
@@ -47,7 +47,7 @@ export default function Home() {
 
           <Link
             to="/agents/new"
-            className="group rounded-xl border bg-card p-6 text-center transition-colors hover:border-primary/40"
+            className="group rounded-2xl glass-card glass-hover p-6 text-center"
           >
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/15">
               <Bot className="h-7 w-7 text-primary" />

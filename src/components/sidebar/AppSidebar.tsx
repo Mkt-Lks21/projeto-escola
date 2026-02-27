@@ -24,20 +24,20 @@ export default function AppSidebar({
   const location = useLocation();
 
   return (
-    <aside className="w-64 border-r bg-card flex flex-col h-screen">
-      <div className="p-4 border-b">
+    <aside className="w-64 flex flex-col h-[calc(100vh-2rem)] glass-panel rounded-2xl overflow-hidden relative z-20">
+      <div className="p-4 border-b border-white/40">
         <Link to="/" className="flex items-center gap-2">
           <Database className="w-6 h-6 text-primary" />
           <span className="font-semibold">DB Analyst</span>
         </Link>
       </div>
 
-      <nav className="p-2 border-b">
+      <nav className="p-2 border-b border-white/35">
         <Link
           to="/"
           className={cn(
             "flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors",
-            "hover:bg-accent"
+            "hover:bg-white/40"
           )}
         >
           <Home className="w-4 h-4" />
@@ -49,7 +49,7 @@ export default function AppSidebar({
             "flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors",
             location.pathname.startsWith("/chat")
               ? "bg-primary text-primary-foreground"
-              : "hover:bg-accent"
+              : "hover:bg-white/40"
           )}
         >
           <MessageSquare className="w-4 h-4" />
@@ -61,7 +61,7 @@ export default function AppSidebar({
             "flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors",
             location.pathname === "/admin"
               ? "bg-primary text-primary-foreground"
-              : "hover:bg-accent"
+              : "hover:bg-white/40"
           )}
         >
           <Settings className="w-4 h-4" />
