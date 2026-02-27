@@ -223,7 +223,7 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
 
   if (blocks.length > 0) {
     return {
-      plainText: "",
+      plainText: stripMarkdownToPlainText(raw),
       sqlBlocks: blocks,
       isChartContent: false,
       chartPayload: null,
@@ -237,4 +237,3 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
     chartPayload: null,
   };
 }
-
