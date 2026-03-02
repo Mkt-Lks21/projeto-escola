@@ -11,9 +11,14 @@ import {
 } from "@/lib/api";
 import { toast } from "sonner";
 
-export function useChat(agentId?: string) {
+const CURRENT_CONVERSATION_STORAGE_KEY = "currentConversationId";
+
+export function useChat(agentId?: string, initialConversationId?: string) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(() => {
+    if (initialConversationId) return initialConversationId;
+    return localStorage.getItem(CURRENT_CONVERSATION_STORAGE_KEY);
+  });
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
@@ -28,6 +33,21 @@ export function useChat(agentId?: string) {
     } else {
       setMessages([]);
     }
+  }, [currentConversationId]);
+
+  useEffect(() => {
+    if (initialConversationId) {
+      setCurrentConversationId(initialConversationId);
+    }
+  }, [initialConversationId]);
+
+  useEffect(() => {
+    if (currentConversationId) {
+      localStorage.setItem(CURRENT_CONVERSATION_STORAGE_KEY, currentConversationId);
+      return;
+    }
+
+    localStorage.removeItem(CURRENT_CONVERSATION_STORAGE_KEY);
   }, [currentConversationId]);
 
   const loadConversations = async () => {
@@ -70,8 +90,10 @@ export function useChat(agentId?: string) {
       const newConversation = await createConversation(undefined, agentId);
       setConversations((prev) => [newConversation, ...prev]);
       setCurrentConversationId(newConversation.id);
+      return newConversation.id;
     } catch {
       toast.error("Erro ao criar conversa");
+      return undefined;
     }
   }, [agentId]);
 
