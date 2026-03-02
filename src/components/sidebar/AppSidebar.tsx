@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Database, Settings, MessageSquare, Home } from "lucide-react";
+import { Settings, MessageSquare, Home } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ConversationList from "./ConversationList";
 import { Conversation } from "@/types/database";
@@ -27,8 +27,8 @@ export default function AppSidebar({
     <aside className="w-64 flex flex-col h-[calc(100vh-2rem)] glass-panel rounded-2xl overflow-hidden relative z-20">
       <div className="p-4 border-b border-white/40">
         <Link to="/" className="flex items-center gap-2">
-          <Database className="w-6 h-6 text-primary" />
-          <span className="font-semibold">DB Analyst</span>
+          <img src="/logo-arquem.svg" alt="Arquem" className="w-6 h-6 object-contain" />
+          <span className="font-semibold">Arquem Analyst</span>
         </Link>
       </div>
 
