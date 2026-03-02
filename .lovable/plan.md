@@ -65,7 +65,7 @@ Quando o usuario definir um `system_prompt` personalizado, esse texto **substitu
 
 A rota `/` exibe uma tela limpa (sem sidebar) com:
 
-- Titulo "DB Analyst"
+- Titulo "Arquem Analyst"
 - Dois cards grandes lado a lado:
   - **Novo Chat**: Icone MessageSquare, abre `/chat` (chat livre como hoje)
   - **Criar Agente**: Icone Bot, abre `/agents/new`

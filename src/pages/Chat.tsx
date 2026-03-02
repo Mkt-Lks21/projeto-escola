@@ -4,11 +4,13 @@ import AppSidebar from "@/components/sidebar/AppSidebar";
 import ChatMessages from "@/components/chat/ChatMessages";
 import ChatInput from "@/components/chat/ChatInput";
 import { executeQuery, getAgentTables } from "@/lib/api";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { AgentTable } from "@/types/database";
 
 export default function Chat() {
   const { agentId } = useParams<{ agentId?: string }>();
+  const [searchParams] = useSearchParams();
+  const initialConversationId = searchParams.get("c") || undefined;
   const [agentTables, setAgentTables] = useState<AgentTable[]>([]);
   const {
     conversations,
@@ -20,7 +22,7 @@ export default function Chat() {
     selectConversation,
     deleteConversation,
     createNewConversation,
-  } = useChat(agentId);
+  } = useChat(agentId, initialConversationId);
 
   useEffect(() => {
     if (!agentId) {
@@ -106,4 +108,3 @@ export default function Chat() {
     </div>
   );
 }
-
