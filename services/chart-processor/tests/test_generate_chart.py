@@ -245,3 +245,37 @@ def test_line_chart_supports_multi_series_wide_comparison() -> None:
     trace_names = {trace.get("name") for trace in traces}
     assert len(traces) == 2
     assert trace_names == {"vendas_2024", "vendas_2025"}
+
+
+def test_bar_chart_supports_long_comparison_with_year_as_series() -> None:
+    payload = {
+        "data": [
+            {"trimestre": 1, "ano": 2024, "total_vendas": 100},
+            {"trimestre": 1, "ano": 2025, "total_vendas": 130},
+            {"trimestre": 2, "ano": 2024, "total_vendas": 120},
+            {"trimestre": 2, "ano": 2025, "total_vendas": 140},
+            {"trimestre": 3, "ano": 2024, "total_vendas": 90},
+            {"trimestre": 3, "ano": 2025, "total_vendas": 160},
+            {"trimestre": 4, "ano": 2024, "total_vendas": 150},
+            {"trimestre": 4, "ano": 2025, "total_vendas": 170},
+        ],
+        "chart_intent": "bar",
+        "title": "Comparacao Trimestral Long",
+    }
+    response = client.post("/generate-chart", json=payload)
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["chart_type_used"] == "bar"
+    assert body["selected_columns"] == {
+        "x": "trimestre",
+        "y": "total_vendas",
+        "series": "ano",
+    }
+
+    traces = body["plotly_figure"]["data"]
+    trace_names = {trace.get("name") for trace in traces}
+    assert trace_names == {"2024", "2025"}
+    assert "ano" not in trace_names
+    assert "total_vendas" not in trace_names
+    assert body["plotly_figure"]["layout"].get("barmode") == "group"
