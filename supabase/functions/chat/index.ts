@@ -15,6 +15,7 @@ const sseHeaders = {
 
 const DEFAULT_PYTHON_API_URL = "https://arquem-python-api.onrender.com";
 const SQL_DEBUG_ALLOWED_TAG = "[SQL_DEBUG_ALLOWED]";
+const INSIGHT_CONTENT_TAG = "[INSIGHT_CONTENT]";
 const MAX_INSIGHT_ROWS = 200;
 const INSIGHT_TEMPERATURE = 0.4;
 
@@ -51,6 +52,16 @@ type InsightToolArgs = {
   sql_query: string;
   analysis_scope: InsightScope;
   analysis_focus: string;
+};
+
+type InsightContentPayload = {
+  success: boolean;
+  analysis_scope: InsightScope;
+  analysis_focus: string;
+  row_count: number;
+  columns: string[];
+  rows: Record<string, unknown>[];
+  insight_text: string;
 };
 
 type ChatMessage = {
@@ -298,7 +309,7 @@ serve(async (req) => {
 
     const targetDescription = "BANCO DE DADOS EXTERNO no Supabase (apenas schema public)";
     const behaviorPrompt = buildBehaviorPrompt(agentContext, targetDescription);
-    const technicalInstructions = buildTechnicalInstructions(userIntent);
+    const technicalInstructions = buildTechnicalInstructions(userIntent, lastUserMessage);
     const systemPrompt = `${behaviorPrompt}\n${technicalInstructions}\n${metadataContext}`;
 
     const llmOptions: LLMCallOptions = {
@@ -323,13 +334,13 @@ serve(async (req) => {
     }
 
     if (llmResult.type === "tool_call_insight") {
-      const insightText = await runInsightFlow(
+      const insightPayload = await runInsightFlow(
         activeSettings,
         externalSupabase,
         lastUserMessage,
         llmResult.args,
       );
-      return createTextSseResponse(insightText);
+      return createInsightSseResponse(insightPayload);
     }
 
     let finalText = sanitizeUserFacingText(llmResult.text, userIntent === "explicit_sql");
@@ -396,8 +407,10 @@ CONTEXTO: O usuario esta usando o ${targetDescription}.
 RESTRICAO: voce so pode usar tabelas do schema public.`;
 }
 
-function buildTechnicalInstructions(userIntent: UserIntent): string {
+function buildTechnicalInstructions(userIntent: UserIntent, lastUserMessage: string): string {
   const technicalSqlAllowed = userIntent === "explicit_sql";
+  const isComparativeChartRequest =
+    userIntent === "chart" && detectComparisonIntent(lastUserMessage);
 
   if (technicalSqlAllowed) {
     return `
@@ -414,7 +427,7 @@ MODO SQL EXPLICITO:
 - Nao usar generate_chart nem generate_insight neste modo`;
   }
 
-  return `
+  const baseInstructions = `
 LIBERDADE PARA QUERIES DE LEITURA:
 - Use qualquer recurso SQL necessario para analise
 - Queries devem ser somente leitura
@@ -434,6 +447,21 @@ USO OBRIGATORIO DA TOOL generate_insight:
 REGRA DE OURO:
 - Nunca exponha SQL ao usuario final em respostas comuns
 - Nunca retorne [AUTO_EXECUTE] fora do modo SQL explicito`;
+
+  if (!isComparativeChartRequest) {
+    return baseInstructions;
+  }
+
+  return `${baseInstructions}
+
+REGRAS ADICIONAIS PARA PEDIDOS DE COMPARACAO:
+- Quando o usuario pedir comparacao (ex: 2024 vs 2025), a SQL DEVE retornar ambas as series solicitadas.
+- Formatos aceitos:
+  1) Wide: periodo + uma coluna numerica por serie (ex: trimestre, vendas_2024, vendas_2025)
+  2) Long: periodo + serie + valor
+- Para comparacoes trimestrais/anuais, agregue por periodo e serie, com ordenacao consistente.
+- Quando fizer sentido, use COALESCE para evitar valores nulos nos agregados.
+- Evite consultas que tragam apenas uma serie quando a pergunta exigir comparacao explicita.`;
 }
 
 function normalizeRequestMessages(messages: unknown): ChatMessage[] {
@@ -507,6 +535,26 @@ function detectUserIntent(lastUserMessage: string): UserIntent {
   }
 
   return "default";
+}
+
+function detectComparisonIntent(lastUserMessage: string): boolean {
+  const normalized = normalizeIntentText(lastUserMessage || "");
+  if (!normalized) {
+    return false;
+  }
+
+  const hasComparisonKeyword =
+    /\b(compar|comparacao|comparativo|vs|versus|contra|ano a ano|year over year|yoy)\b/.test(
+      normalized,
+    );
+
+  const years = normalized.match(/\b20\d{2}\b/g) || [];
+  const hasMultipleYears = new Set(years).size >= 2;
+  const hasPeriodSignal = /\b(trimestre|trimestral|mes|mensal|ano|anual|periodo)\b/.test(
+    normalized,
+  );
+
+  return hasComparisonKeyword || (hasMultipleYears && hasPeriodSignal);
 }
 
 function normalizeProvider(provider: unknown): ProviderName | null {
@@ -1020,9 +1068,25 @@ async function runInsightFlow(
   externalSupabase: any,
   userQuestion: string,
   insightArgs: InsightToolArgs,
-): Promise<string> {
+): Promise<InsightContentPayload> {
   const queryData = await executeInsightQuery(externalSupabase, insightArgs.sql_query);
-  return await synthesizeInsightText(settings, userQuestion, insightArgs, queryData);
+  const rows = queryData.slice(0, MAX_INSIGHT_ROWS);
+  const truncated = queryData.length > MAX_INSIGHT_ROWS;
+  if (truncated) {
+    console.log(`Insight rows truncated from ${queryData.length} to ${MAX_INSIGHT_ROWS}.`);
+  }
+
+  const insightText = await synthesizeInsightText(settings, userQuestion, insightArgs, queryData);
+
+  return {
+    success: true,
+    analysis_scope: insightArgs.analysis_scope,
+    analysis_focus: insightArgs.analysis_focus,
+    row_count: queryData.length,
+    columns: inferColumns(rows),
+    rows,
+    insight_text: insightText,
+  };
 }
 
 async function synthesizeInsightText(
@@ -1033,9 +1097,6 @@ async function synthesizeInsightText(
 ): Promise<string> {
   const limitedRows = queryData.slice(0, MAX_INSIGHT_ROWS);
   const truncated = queryData.length > MAX_INSIGHT_ROWS;
-  if (truncated) {
-    console.log(`Insight rows truncated from ${queryData.length} to ${MAX_INSIGHT_ROWS}.`);
-  }
 
   const synthesisSystemPrompt = buildInsightSynthesisPrompt(insightArgs.analysis_scope);
   const datasetPayload = {
@@ -1074,19 +1135,20 @@ async function synthesizeInsightText(
 
   const cleaned = sanitizeInsightNarrative(synthesisResult.text);
   if (cleaned) {
-    return ensureInsightClosingBlock(
-      cleaned,
-      insightArgs.analysis_scope,
-      insightArgs.analysis_focus,
-      userQuestion,
-    );
+    return ensureInsightClosingBlock(cleaned, insightArgs.analysis_focus);
   }
 
   if (queryData.length === 0) {
-    return "Nao encontrei registros para essa analise no periodo informado. Posso revisar os filtros e tentar outra abordagem.";
+    return ensureInsightClosingBlock(
+      "Nao encontrei registros para essa analise no periodo informado. Posso revisar os filtros e tentar outra abordagem.",
+      insightArgs.analysis_focus,
+    );
   }
 
-  return "Nao foi possivel concluir a sintese analitica no momento, mas os dados foram processados com sucesso.";
+  return ensureInsightClosingBlock(
+    "Nao foi possivel concluir a sintese analitica no momento, mas os dados foram processados com sucesso.",
+    insightArgs.analysis_focus,
+  );
 }
 
 function buildInsightSynthesisPrompt(scope: InsightScope): string {
@@ -1117,14 +1179,8 @@ As 3 sugestoes devem ser acionaveis e alinhadas ao contexto. Exemplos validos:
 
 function ensureInsightClosingBlock(
   text: string,
-  scope: InsightScope,
   analysisFocus: string,
-  userQuestion: string,
 ): string {
-  if (!shouldAppendFollowUpSuggestions(scope, userQuestion)) {
-    return text.trim();
-  }
-
   let output = text.trim();
   if (!output) {
     return output;
@@ -1148,27 +1204,6 @@ function ensureInsightClosingBlock(
   return output.trim();
 }
 
-function shouldAppendFollowUpSuggestions(scope: InsightScope, userQuestion: string): boolean {
-  if (scope === "broad") {
-    return true;
-  }
-
-  const normalizedQuestion = normalizeIntentText(userQuestion || "");
-  if (!normalizedQuestion) {
-    return false;
-  }
-
-  const asksDeepAnalysis =
-    /\b(analise|analisar|insight|resumo|diagnostico|desempenho|tendencia|avaliar|interpretar)\b/.test(
-      normalizedQuestion,
-    );
-
-  const looksStrictlyDirect =
-    /\b(qual|quanto|quantos|quando|onde|quem)\b/.test(normalizedQuestion) && !asksDeepAnalysis;
-
-  return asksDeepAnalysis && !looksStrictlyDirect;
-}
-
 function buildDefaultFollowUpBlock(analysisFocus: string): string {
   const normalizedFocus = normalizeIntentText(analysisFocus || "");
   const isSalesContext =
@@ -1176,9 +1211,9 @@ function buildDefaultFollowUpBlock(analysisFocus: string): string {
 
   if (isSalesContext) {
     return `Para aprofundar, poderiamos gerar graficos para:
-- Vendas por Categoria de Produto: para identificar quais categorias puxam os picos e as quedas.
-- Vendas por Vendedor ou Canal: para entender onde estao os principais ganhos de performance.
-- Comparativo Anual ou Trimestral: para separar sazonalidade de crescimento estrutural.`;
+- Vendas por Categoria de Produto: para entender se a sazonalidade afeta categorias especificas.
+- Vendas por Vendedor: para identificar os vendedores de melhor performance e suas estrategias.
+- Comparativo Anual: se tivermos dados de anos anteriores, poderemos comparar periodos para identificar tendencias de crescimento de longo prazo.`;
   }
 
   return `Para aprofundar, poderiamos gerar graficos para:
@@ -1198,6 +1233,7 @@ function sanitizeInsightNarrative(text: string): string {
   let output = text || "";
   output = output.replace(/\[AUTO_EXECUTE\]/gi, "");
   output = output.replace(/\[CHART_CONTENT\]/gi, "");
+  output = output.replace(/\[INSIGHT_CONTENT\]/gi, "");
   output = output.replace(/\[RESULTADO_DA_QUERY\]/gi, "");
   output = output.replace(/\[SQL_DEBUG_ALLOWED\]/gi, "");
   output = output.replace(/```(?:sql|postgres|postgresql)?[\s\S]*?```/gi, "");
@@ -1213,6 +1249,7 @@ function sanitizeUserFacingText(text: string, allowTechnicalSql: boolean): strin
   let output = text || "";
   output = output.replace(/\[AUTO_EXECUTE\]/gi, "");
   output = output.replace(/\[CHART_CONTENT\]/gi, "");
+  output = output.replace(/\[INSIGHT_CONTENT\]/gi, "");
   output = output.replace(/\[RESULTADO_DA_QUERY\]/gi, "");
   output = output.replace(/\[SQL_DEBUG_ALLOWED\]/gi, "");
   output = output.replace(/```(?:sql|postgres|postgresql)?[\s\S]*?```/gi, "");
@@ -1242,6 +1279,11 @@ function createTextSseResponse(text: string): Response {
 function createChartSseResponse(pythonPayload: Record<string, unknown>): Response {
   const chartContent = `[CHART_CONTENT] ${JSON.stringify(pythonPayload)}`;
   return createSseResponse([chartContent]);
+}
+
+function createInsightSseResponse(payload: InsightContentPayload): Response {
+  const insightContent = `${INSIGHT_CONTENT_TAG} ${JSON.stringify(payload)}`;
+  return createSseResponse([insightContent]);
 }
 
 function createSseResponse(chunks: string[]): Response {
