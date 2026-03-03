@@ -25,6 +25,8 @@ class InferenceResult:
     y_column: str | None
     mode: Literal["value", "count"]
     x_kind: Literal["datetime", "categorical", "other"]
+    series_column: str | None = None
+    value_columns: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -97,7 +99,22 @@ def infer_columns(df: pd.DataFrame, requested_chart_type: str) -> InferenceResul
         return _infer_scatter(column_types, warnings)
 
     x_column, x_kind = _choose_x_axis(chart_type, ordered_columns, column_types)
-    y_column = _pick_first(column_types.numeric, exclude={x_column})
+    numeric_non_x = [column for column in column_types.numeric if column != x_column]
+
+    # For bar/line comparison scenarios, keep all numeric columns as parallel series.
+    if chart_type in {"bar", "line"} and len(numeric_non_x) >= 2:
+        return InferenceResult(
+            chart_type=chart_type,
+            x_column=x_column,
+            y_column="__value",
+            mode="value",
+            x_kind=x_kind,
+            series_column="__series",
+            value_columns=numeric_non_x,
+            warnings=warnings,
+        )
+
+    y_column = _pick_first(numeric_non_x)
     mode: Literal["value", "count"] = "value" if y_column else "count"
 
     if mode == "count":
@@ -111,6 +128,8 @@ def infer_columns(df: pd.DataFrame, requested_chart_type: str) -> InferenceResul
         y_column=y_column,
         mode=mode,
         x_kind=x_kind,
+        series_column=None,
+        value_columns=[],
         warnings=warnings,
     )
 
@@ -131,6 +150,8 @@ def _infer_scatter(column_types: ColumnTypes, warnings: list[str]) -> InferenceR
         y_column=numeric_columns[1],
         mode="value",
         x_kind="other",
+        series_column=None,
+        value_columns=[],
         warnings=warnings,
     )
 
@@ -164,4 +185,3 @@ def _pick_first(columns: list[str], exclude: set[str] | None = None) -> str | No
         if column not in excluded:
             return column
     return None
-

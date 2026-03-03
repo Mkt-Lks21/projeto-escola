@@ -28,7 +28,31 @@ describe("assistantContentParser", () => {
 
     expect(parsed.isChartContent).toBe(true);
     expect(parsed.chartPayload?.success).toBe(true);
+    expect(parsed.isInsightContent).toBe(false);
     expect(parsed.sqlBlocks.length).toBe(0);
+  });
+
+  it("detects insight payload content", () => {
+    const content =
+      '[INSIGHT_CONTENT] {"success":true,"analysis_scope":"broad","analysis_focus":"Vendas por mes","row_count":2,"columns":["mes","total"],"rows":[{"mes":1,"total":100},{"mes":2,"total":200}],"insight_text":"As vendas cresceram 100% de janeiro para fevereiro."}';
+
+    const parsed = parseAssistantContent(content);
+
+    expect(parsed.isInsightContent).toBe(true);
+    expect(parsed.insightPayload?.success).toBe(true);
+    expect(parsed.insightPayload?.columns).toEqual(["mes", "total"]);
+    expect(parsed.insightPayload?.rows?.length).toBe(2);
+    expect(parsed.isChartContent).toBe(false);
+    expect(parsed.sqlBlocks.length).toBe(0);
+  });
+
+  it("falls back to plain text when insight payload is invalid json", () => {
+    const content = '[INSIGHT_CONTENT] {"success":true';
+    const parsed = parseAssistantContent(content);
+
+    expect(parsed.isInsightContent).toBe(false);
+    expect(parsed.insightPayload).toBeNull();
+    expect(parsed.plainText).toContain("[INSIGHT_CONTENT]");
   });
 
   it("enables SQL debug only when marker is present", () => {
@@ -42,4 +66,3 @@ describe("assistantContentParser", () => {
     expect(parsedNormal.allowSqlDebug).toBe(false);
   });
 });
-

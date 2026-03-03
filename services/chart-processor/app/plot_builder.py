@@ -16,24 +16,36 @@ def build_plotly_figure(
     df: pd.DataFrame, inference: InferenceResult, title: str | None
 ) -> tuple[dict[str, Any], dict[str, str | None]]:
     chart_title = (title or f"{inference.chart_type} chart").strip()
-    selected_columns = {"x": inference.x_column, "y": inference.y_column}
+    selected_columns = {
+        "x": inference.x_column,
+        "y": inference.y_column,
+        "series": inference.series_column,
+    }
 
     if inference.chart_type == "scatter":
         figure = _build_scatter(df, inference, chart_title)
         return figure, selected_columns
 
-    grouped_df, metric_column = _prepare_grouped_frame(df, inference)
+    grouped_df, metric_column, series_column = _prepare_grouped_frame(df, inference)
 
     if inference.mode == "count":
         selected_columns["y"] = "__count"
 
     if inference.chart_type == "bar":
-        fig = px.bar(grouped_df, x=inference.x_column, y=metric_column, title=chart_title)
+        fig = px.bar(
+            grouped_df,
+            x=inference.x_column,
+            y=metric_column,
+            color=series_column,
+            barmode="group",
+            title=chart_title,
+        )
     elif inference.chart_type == "line":
         fig = px.line(
             grouped_df,
             x=inference.x_column,
             y=metric_column,
+            color=series_column,
             title=chart_title,
             markers=True,
         )
@@ -76,7 +88,7 @@ def _build_scatter(df: pd.DataFrame, inference: InferenceResult, title: str) -> 
 
 def _prepare_grouped_frame(
     df: pd.DataFrame, inference: InferenceResult
-) -> tuple[pd.DataFrame, str]:
+) -> tuple[pd.DataFrame, str, str | None]:
     x_column = inference.x_column
 
     if inference.mode == "count":
@@ -95,30 +107,67 @@ def _prepare_grouped_frame(
             .reset_index(name="count")
         )
         metric_column = "count"
+        series_column = None
     else:
-        if not inference.y_column:
-            raise ApiError(
-                status_code=422,
-                error_code="INVALID_CHART_CONFIGURATION",
-                message="Missing y-axis column for value chart.",
-            )
+        if inference.series_column and inference.value_columns:
+            series_column = inference.series_column
+            value_column = inference.y_column or "__value"
+            plot_df = df[[x_column, *inference.value_columns]].copy()
+            if inference.x_kind == "datetime":
+                plot_df[x_column] = pd.to_datetime(
+                    plot_df[x_column],
+                    errors="coerce",
+                    utc=False,
+                    format="mixed",
+                )
 
-        y_column = inference.y_column
-        plot_df = df[[x_column, y_column]].copy()
-        if inference.x_kind == "datetime":
-            plot_df[x_column] = pd.to_datetime(
-                plot_df[x_column],
-                errors="coerce",
-                utc=False,
-                format="mixed",
+            for numeric_column in inference.value_columns:
+                plot_df[numeric_column] = pd.to_numeric(
+                    plot_df[numeric_column], errors="coerce"
+                )
+
+            melted_df = plot_df.melt(
+                id_vars=[x_column],
+                value_vars=inference.value_columns,
+                var_name=series_column,
+                value_name=value_column,
             )
-        plot_df[y_column] = pd.to_numeric(plot_df[y_column], errors="coerce")
-        plot_df = plot_df.dropna(subset=[x_column, y_column])
-        grouped_df = (
-            plot_df.groupby(x_column, dropna=False, sort=False, as_index=False)[y_column]
-            .sum()
-        )
-        metric_column = y_column
+            melted_df[value_column] = pd.to_numeric(
+                melted_df[value_column], errors="coerce"
+            )
+            melted_df = melted_df.dropna(subset=[x_column, value_column])
+
+            grouped_df = (
+                melted_df.groupby(
+                    [x_column, series_column], dropna=False, sort=False, as_index=False
+                )[value_column].sum()
+            )
+            metric_column = value_column
+        else:
+            series_column = None
+            if not inference.y_column:
+                raise ApiError(
+                    status_code=422,
+                    error_code="INVALID_CHART_CONFIGURATION",
+                    message="Missing y-axis column for value chart.",
+                )
+
+            y_column = inference.y_column
+            plot_df = df[[x_column, y_column]].copy()
+            if inference.x_kind == "datetime":
+                plot_df[x_column] = pd.to_datetime(
+                    plot_df[x_column],
+                    errors="coerce",
+                    utc=False,
+                    format="mixed",
+                )
+            plot_df[y_column] = pd.to_numeric(plot_df[y_column], errors="coerce")
+            plot_df = plot_df.dropna(subset=[x_column, y_column])
+            grouped_df = (
+                plot_df.groupby(x_column, dropna=False, sort=False, as_index=False)[y_column]
+                .sum()
+            )
+            metric_column = y_column
 
     if grouped_df.empty:
         raise ApiError(
@@ -128,11 +177,12 @@ def _prepare_grouped_frame(
         )
 
     if inference.chart_type == "line":
-        grouped_df = grouped_df.sort_values(by=x_column, kind="stable")
+        sort_columns = [x_column]
+        if series_column:
+            sort_columns.append(series_column)
+        grouped_df = grouped_df.sort_values(by=sort_columns, kind="stable")
 
-    return grouped_df, metric_column
-
-
+    return grouped_df, metric_column, series_column
 def _apply_default_layout(fig: Any) -> None:
     fig.update_layout(
         template="plotly_white",
@@ -165,4 +215,3 @@ def _decode_typed_array(dtype: Any, bdata: Any) -> list[Any] | None:
         return np_array.tolist()
     except Exception:
         return None
-
