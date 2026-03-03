@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { testExternalConnection } from "@/lib/api";
 import { useLLMSettings } from "@/hooks/useLLMSettings";
 import { useMetadata } from "@/hooks/useMetadata";
 import { OPENAI_MODELS, GOOGLE_MODELS } from "@/types/database";
@@ -106,42 +107,23 @@ export default function Admin() {
   const handleTestConnection = async () => {
     setConnectionStatus("testing");
     setConnectionMessage("");
-    
+
     try {
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const supabaseKey =
-        import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-        import.meta.env.VITE_SUPABASE_ANON_KEY;
+      const data = await testExternalConnection();
 
-      if (!supabaseKey) {
-        throw new Error("Missing Supabase publishable key in environment.");
-      }
-
-      const response = await fetch(`${supabaseUrl}/functions/v1/external-db-proxy`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
-        },
-        body: JSON.stringify({ action: "test-connection" }),
-      });
-
-      const data = await response.json();
-
-      if (response.ok && data.success) {
+      if (data.success) {
         setConnectionStatus("success");
-        setConnectionMessage(data.message);
-        toast.success("Conexão estabelecida!");
+        setConnectionMessage(data.message || "Conexao estabelecida!");
+        toast.success("Conexao estabelecida!");
       } else {
         setConnectionStatus("error");
-        setConnectionMessage(data.error || "Falha na conexão");
-        toast.error(data.error || "Falha na conexão");
+        setConnectionMessage(data.error || "Falha na conexao");
+        toast.error(data.error || "Falha na conexao");
       }
     } catch (error) {
       setConnectionStatus("error");
-      setConnectionMessage("Erro ao testar conexão");
-      toast.error("Erro ao testar conexão");
+      setConnectionMessage("Erro ao testar conexao");
+      toast.error("Erro ao testar conexao");
     }
   };
 
@@ -456,5 +438,6 @@ export default function Admin() {
     </div>
   );
 }
+
 
 

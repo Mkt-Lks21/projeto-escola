@@ -54,6 +54,7 @@ export type Database = {
           name: string
           system_prompt: string | null
           updated_at: string
+          user_id: string
         }
         Insert: {
           created_at?: string
@@ -62,6 +63,7 @@ export type Database = {
           name: string
           system_prompt?: string | null
           updated_at?: string
+          user_id?: string
         }
         Update: {
           created_at?: string
@@ -70,8 +72,17 @@ export type Database = {
           name?: string
           system_prompt?: string | null
           updated_at?: string
+          user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "agents_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       conversations: {
         Row: {
@@ -80,6 +91,7 @@ export type Database = {
           id: string
           title: string
           updated_at: string
+          user_id: string
         }
         Insert: {
           agent_id?: string | null
@@ -87,6 +99,7 @@ export type Database = {
           id?: string
           title?: string
           updated_at?: string
+          user_id?: string
         }
         Update: {
           agent_id?: string | null
@@ -94,6 +107,7 @@ export type Database = {
           id?: string
           title?: string
           updated_at?: string
+          user_id?: string
         }
         Relationships: [
           {
@@ -101,6 +115,13 @@ export type Database = {
             columns: ["agent_id"]
             isOneToOne: false
             referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversations_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
             referencedColumns: ["id"]
           },
         ]
@@ -147,6 +168,7 @@ export type Database = {
           model: string
           provider: string
           updated_at: string
+          user_id: string
         }
         Insert: {
           api_key: string
@@ -156,6 +178,7 @@ export type Database = {
           model: string
           provider: string
           updated_at?: string
+          user_id?: string
         }
         Update: {
           api_key?: string
@@ -165,8 +188,17 @@ export type Database = {
           model?: string
           provider?: string
           updated_at?: string
+          user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "llm_settings_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       messages: {
         Row: {

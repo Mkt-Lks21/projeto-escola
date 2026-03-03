@@ -13,6 +13,24 @@ function getSupabasePublicKey(): string {
   return key;
 }
 
+async function getAuthenticatedFunctionHeaders(): Promise<Record<string, string>> {
+  const supabaseKey = getSupabasePublicKey();
+  const { data, error } = await supabase.auth.getSession();
+
+  if (error) throw error;
+
+  const accessToken = data.session?.access_token;
+  if (!accessToken) {
+    throw new Error("Sessao expirada. Faca login novamente.");
+  }
+
+  return {
+    "Content-Type": "application/json",
+    apikey: supabaseKey,
+    Authorization: `Bearer ${accessToken}`,
+  };
+}
+
 export async function getConversations(): Promise<Conversation[]> {
   const { data, error } = await supabase
     .from("conversations")
@@ -115,15 +133,11 @@ export async function refreshMetadata(): Promise<void> {
 
 export async function fetchExternalMetadata(): Promise<DatabaseMetadata[]> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-  const supabaseKey = getSupabasePublicKey();
+  const headers = await getAuthenticatedFunctionHeaders();
 
   const response = await fetch(`${supabaseUrl}/functions/v1/external-db-proxy`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      apikey: supabaseKey,
-      Authorization: `Bearer ${supabaseKey}`,
-    },
+    headers,
     body: JSON.stringify({ action: "fetch-metadata" }),
   });
 
@@ -157,15 +171,11 @@ export async function cacheExternalMetadata(_metadata: DatabaseMetadata[]): Prom
 
 export async function executeExternalQuery(query: string): Promise<any[]> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-  const supabaseKey = getSupabasePublicKey();
+  const headers = await getAuthenticatedFunctionHeaders();
 
   const response = await fetch(`${supabaseUrl}/functions/v1/external-db-proxy`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      apikey: supabaseKey,
-      Authorization: `Bearer ${supabaseKey}`,
-    },
+    headers,
     body: JSON.stringify({ action: "execute-query", query }),
   });
 
@@ -184,17 +194,36 @@ export async function sendChatMessage(
   agentId?: string
 ): Promise<Response> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-  const supabaseKey = getSupabasePublicKey();
+  const headers = await getAuthenticatedFunctionHeaders();
 
   return fetch(`${supabaseUrl}/functions/v1/chat`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      apikey: supabaseKey,
-      Authorization: `Bearer ${supabaseKey}`,
-    },
+    headers,
     body: JSON.stringify({ messages, conversationId, agentId }),
   });
+}
+
+export async function testExternalConnection(): Promise<{
+  success: boolean;
+  message?: string;
+  error?: string;
+  url?: string;
+}> {
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const headers = await getAuthenticatedFunctionHeaders();
+
+  const response = await fetch(`${supabaseUrl}/functions/v1/external-db-proxy`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ action: "test-connection" }),
+  });
+
+  const result = await response.json();
+  if (!response.ok) {
+    throw new Error(result.error || "Falha ao testar conexao externa.");
+  }
+
+  return result;
 }
 
 // ===== AGENTS API =====
