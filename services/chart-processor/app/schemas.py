@@ -51,6 +51,7 @@ class GenerateChartRequest(BaseModel):
 class SelectedColumns(BaseModel):
     x: str
     y: str | None = None
+    series: str | None = None
 
 
 class GenerateChartResponse(BaseModel):
@@ -66,4 +67,3 @@ class ErrorResponse(BaseModel):
     error_code: str
     message: str
     details: dict[str, Any] = Field(default_factory=dict)
-

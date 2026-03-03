@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { Play, Copy, Check, User, Bot, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import QueryResultTable from "./QueryResultTable";
+import InsightResultPanel from "./InsightResultPanel";
 import Plot from "react-plotly.js";
 import type { Config as PlotlyConfig, Data as PlotlyData, Layout as PlotlyLayout } from "plotly.js";
 import { ParsedSqlBlock, parseAssistantContent } from "@/lib/chat/assistantContentParser";
@@ -103,6 +104,8 @@ export default function ChatMessage({
   const canRenderSql = showSqlDebug && allowSqlDebug;
   const isChartContent = parsedContent?.isChartContent || false;
   const chartPayload = parsedContent?.chartPayload || null;
+  const isInsightContent = parsedContent?.isInsightContent || false;
+  const insightPayload = parsedContent?.insightPayload || null;
   const plotData = Array.isArray(chartPayload?.plotly_figure?.data)
     ? (chartPayload.plotly_figure.data as PlotlyData[])
     : [];
@@ -127,6 +130,8 @@ export default function ChatMessage({
       <div className="flex-1 min-w-0">
         {isUser ? (
           <p className="text-sm leading-6 whitespace-pre-wrap break-words">{message.content}</p>
+        ) : isInsightContent ? (
+          <InsightResultPanel payload={insightPayload} />
         ) : isChartContent ? (
           <div className="space-y-3">
             {!chartPayload ? (
