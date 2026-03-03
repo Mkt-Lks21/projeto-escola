@@ -46,7 +46,7 @@ export interface ParsedAssistantContent {
   allowSqlDebug: boolean;
 }
 
-const SQL_FENCE_REGEX = /```(?:sql|postgres|postgresql)?\s*([\s\S]*?)```/gi;
+const SQL_FENCE_REGEX = /```(?:sql|postgres|postgresql)\s*[\s\S]*?```/gi;
 const AUTO_EXECUTE_REGEX = /\[AUTO_EXECUTE\]/gi;
 const CHART_CONTENT_TAG = "[CHART_CONTENT]";
 const CHART_INSIGHT_CONTENT_TAG = "[CHART_INSIGHT_CONTENT]";
@@ -81,18 +81,14 @@ function removeAutoExecuteSqlFromText(text: string, blocks: ParsedSqlBlock[]): s
   return output;
 }
 
-function stripMarkdownToPlainText(text: string): string {
+function sanitizeAssistantText(text: string): string {
   let output = text;
 
   output = output.replace(SQL_FENCE_REGEX, "");
   output = output.replace(AUTO_EXECUTE_REGEX, "");
   output = output.replace(/\[SQL_DEBUG_ALLOWED\]/gi, "");
   output = output.replace(/\[RESULTADO_DA_QUERY\]/gi, "");
-  output = output.replace(/`([^`]+)`/g, "$1");
-  output = output.replace(/\*\*([^*]+)\*\*/g, "$1");
-  output = output.replace(/\*([^*]+)\*/g, "$1");
-  output = output.replace(/^#{1,6}\s*/gm, "");
-  output = output.replace(/^\s*[-*+]\s+/gm, "- ");
+  output = output.replace(/```[\t ]*(?:\r?\n[\t ]*)?```/g, "");
   output = output.replace(/\n{3,}/g, "\n\n");
 
   return output.trim();
@@ -363,7 +359,7 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
 
   if (blocks.length > 0) {
     return {
-      plainText: stripMarkdownToPlainText(withoutSqlSnippets),
+      plainText: sanitizeAssistantText(withoutSqlSnippets),
       sqlBlocks: blocks,
       isChartContent: false,
       chartPayload: null,
@@ -376,7 +372,7 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
   }
 
   return {
-    plainText: stripMarkdownToPlainText(cleanedRaw),
+    plainText: sanitizeAssistantText(cleanedRaw),
     sqlBlocks: [],
     isChartContent: false,
     chartPayload: null,
