@@ -97,6 +97,10 @@ type LLMResult =
   | { type: "tool_call_chart"; args: ChartToolArgs }
   | { type: "tool_call_insight"; args: InsightToolArgs };
 
+type AuthenticatedUser = {
+  id: string;
+};
+
 const OPENAI_TOOLS = [
   {
     type: "function",
@@ -215,10 +219,6 @@ serve(async (req) => {
   }
 
   try {
-    const body = await req.json();
-    const messages = normalizeRequestMessages(body?.messages);
-    const agentId = typeof body?.agentId === "string" ? body.agentId : null;
-
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
@@ -230,10 +230,23 @@ serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
+    const authenticatedUser = await authenticateRequestUser(req, supabase);
+
+    if (!authenticatedUser) {
+      return new Response(
+        JSON.stringify({ error: "Missing or invalid authorization token." }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const body = await req.json();
+    const messages = normalizeRequestMessages(body?.messages);
+    const agentId = typeof body?.agentId === "string" ? body.agentId : null;
 
     const { data: settings, error: settingsError } = await supabase
       .from("llm_settings")
       .select("*")
+      .eq("user_id", authenticatedUser.id)
       .eq("is_active", true)
       .single();
 
@@ -260,16 +273,26 @@ serve(async (req) => {
 
     let agentContext: { agent: any; tables: any[] } | null = null;
     if (agentId) {
-      const { data: agent } = await supabase.from("agents").select("*").eq("id", agentId).single();
+      const { data: agent } = await supabase
+        .from("agents")
+        .select("*")
+        .eq("id", agentId)
+        .eq("user_id", authenticatedUser.id)
+        .single();
 
-      if (agent) {
-        const { data: agentTables } = await supabase
-          .from("agent_tables")
-          .select("*")
-          .eq("agent_id", agentId);
-
-        agentContext = { agent, tables: agentTables || [] };
+      if (!agent) {
+        return new Response(
+          JSON.stringify({ error: "Agente nao encontrado para este usuario." }),
+          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
       }
+
+      const { data: agentTables } = await supabase
+        .from("agent_tables")
+        .select("*")
+        .eq("agent_id", agentId);
+
+      agentContext = { agent, tables: agentTables || [] };
     }
 
     const externalUrl = Deno.env.get("EXTERNAL_SUPABASE_URL");
@@ -670,6 +693,37 @@ function normalizeProvider(provider: unknown): ProviderName | null {
   }
 
   return null;
+}
+
+function extractBearerToken(req: Request): string | null {
+  const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+  if (!authHeader) {
+    return null;
+  }
+
+  const [scheme, token] = authHeader.split(" ");
+  if (!scheme || !token || scheme.toLowerCase() !== "bearer") {
+    return null;
+  }
+
+  return token.trim() || null;
+}
+
+async function authenticateRequestUser(req: Request, supabase: any): Promise<AuthenticatedUser | null> {
+  const accessToken = extractBearerToken(req);
+  if (!accessToken) {
+    return null;
+  }
+
+  const { data, error } = await supabase.auth.getUser(accessToken);
+  if (error || !data?.user) {
+    console.warn("Chat auth failed:", error?.message || "missing user");
+    return null;
+  }
+
+  return {
+    id: data.user.id,
+  };
 }
 
 function formatMetadata(metadata: any[]): string {
