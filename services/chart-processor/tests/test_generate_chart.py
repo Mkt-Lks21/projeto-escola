@@ -31,7 +31,7 @@ def test_bar_chart_with_categorical_and_numeric_columns() -> None:
 
     assert response.status_code == 200
     assert body["chart_type_used"] == "bar"
-    assert body["selected_columns"] == {"x": "category", "y": "value"}
+    assert body["selected_columns"] == {"x": "category", "y": "value", "series": None}
     assert "data" in body["plotly_figure"]
     assert "layout" in body["plotly_figure"]
 
@@ -51,7 +51,7 @@ def test_line_chart_sorts_and_aggregates_duplicate_x_values() -> None:
 
     assert response.status_code == 200
     assert body["chart_type_used"] == "line"
-    assert body["selected_columns"] == {"x": "event_date", "y": "revenue"}
+    assert body["selected_columns"] == {"x": "event_date", "y": "revenue", "series": None}
 
     trace = body["plotly_figure"]["data"][0]
     x_values = [isoparse(value).date().isoformat() for value in trace["x"]]
@@ -75,7 +75,7 @@ def test_pie_chart_returns_valid_pie_trace() -> None:
 
     assert response.status_code == 200
     assert body["chart_type_used"] == "pie"
-    assert body["selected_columns"] == {"x": "segment", "y": "sales"}
+    assert body["selected_columns"] == {"x": "segment", "y": "sales", "series": None}
     assert body["plotly_figure"]["data"][0]["type"] == "pie"
 
 
@@ -93,7 +93,7 @@ def test_scatter_chart_with_two_numeric_columns() -> None:
 
     assert response.status_code == 200
     assert body["chart_type_used"] == "scatter"
-    assert body["selected_columns"] == {"x": "x_val", "y": "y_val"}
+    assert body["selected_columns"] == {"x": "x_val", "y": "y_val", "series": None}
     assert body["plotly_figure"]["data"][0]["type"] == "scatter"
 
 
@@ -110,7 +110,7 @@ def test_bar_chart_fallback_to_count_when_no_numeric_column_exists() -> None:
     body = response.json()
 
     assert response.status_code == 200
-    assert body["selected_columns"] == {"x": "status", "y": "__count"}
+    assert body["selected_columns"] == {"x": "status", "y": "__count", "series": None}
     assert any("count fallback" in warning.lower() for warning in body["warnings"])
 
     trace = body["plotly_figure"]["data"][0]
@@ -189,3 +189,59 @@ def test_plotly_figure_contract_is_json_serializable() -> None:
     assert "layout" in body["plotly_figure"]
     json.dumps(body["plotly_figure"])
 
+
+def test_bar_chart_supports_multi_series_wide_comparison() -> None:
+    payload = {
+        "data": [
+            {"trimestre": 1, "vendas_2024": 100, "vendas_2025": 130},
+            {"trimestre": 2, "vendas_2024": 120, "vendas_2025": 140},
+            {"trimestre": 3, "vendas_2024": 90, "vendas_2025": 160},
+            {"trimestre": 4, "vendas_2024": 150, "vendas_2025": 170},
+        ],
+        "chart_intent": "bar",
+        "title": "Comparacao Trimestral",
+    }
+    response = client.post("/generate-chart", json=payload)
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["chart_type_used"] == "bar"
+    assert body["selected_columns"] == {
+        "x": "trimestre",
+        "y": "__value",
+        "series": "__series",
+    }
+
+    traces = body["plotly_figure"]["data"]
+    trace_names = {trace.get("name") for trace in traces}
+    assert len(traces) == 2
+    assert trace_names == {"vendas_2024", "vendas_2025"}
+    assert body["plotly_figure"]["layout"].get("barmode") == "group"
+
+
+def test_line_chart_supports_multi_series_wide_comparison() -> None:
+    payload = {
+        "data": [
+            {"trimestre": 1, "vendas_2024": 100, "vendas_2025": 130},
+            {"trimestre": 2, "vendas_2024": 120, "vendas_2025": 140},
+            {"trimestre": 3, "vendas_2024": 90, "vendas_2025": 160},
+            {"trimestre": 4, "vendas_2024": 150, "vendas_2025": 170},
+        ],
+        "chart_intent": "line",
+        "title": "Comparacao Trimestral",
+    }
+    response = client.post("/generate-chart", json=payload)
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["chart_type_used"] == "line"
+    assert body["selected_columns"] == {
+        "x": "trimestre",
+        "y": "__value",
+        "series": "__series",
+    }
+
+    traces = body["plotly_figure"]["data"]
+    trace_names = {trace.get("name") for trace in traces}
+    assert len(traces) == 2
+    assert trace_names == {"vendas_2024", "vendas_2025"}

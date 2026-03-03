@@ -14,17 +14,30 @@ export interface ParsedChartPayload {
   };
 }
 
+export interface ParsedInsightPayload {
+  success?: boolean;
+  analysis_scope?: "broad" | "specific";
+  analysis_focus?: string;
+  row_count?: number;
+  columns?: string[];
+  rows?: Record<string, unknown>[];
+  insight_text?: string;
+}
+
 export interface ParsedAssistantContent {
   plainText: string;
   sqlBlocks: ParsedSqlBlock[];
   isChartContent: boolean;
   chartPayload: ParsedChartPayload | null;
+  isInsightContent: boolean;
+  insightPayload: ParsedInsightPayload | null;
   allowSqlDebug: boolean;
 }
 
 const SQL_FENCE_REGEX = /```(?:sql|postgres|postgresql)?\s*([\s\S]*?)```/gi;
 const AUTO_EXECUTE_REGEX = /\[AUTO_EXECUTE\]/gi;
 const CHART_CONTENT_TAG = "[CHART_CONTENT]";
+const INSIGHT_CONTENT_TAG = "[INSIGHT_CONTENT]";
 
 function sanitizeSql(query: string): string {
   return query.trim().replace(/;+\s*$/g, "");
@@ -224,6 +237,28 @@ function parseChartPayload(raw: string): ParsedChartPayload | null {
   }
 }
 
+function parseInsightPayload(raw: string): ParsedInsightPayload | null {
+  const markerIndex = raw.indexOf(INSIGHT_CONTENT_TAG);
+  if (markerIndex < 0) {
+    return null;
+  }
+
+  const jsonCandidate = raw.slice(markerIndex + INSIGHT_CONTENT_TAG.length).trim();
+  if (!jsonCandidate) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(jsonCandidate);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as ParsedInsightPayload;
+  } catch {
+    return null;
+  }
+}
+
 export function parseAssistantContent(content: string): ParsedAssistantContent {
   const raw = (content || "").replace(/\[RESULTADO_DA_QUERY\]/gi, "");
   const allowSqlDebug = /\[SQL_DEBUG_ALLOWED\]/i.test(raw);
@@ -237,8 +272,27 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
       sqlBlocks: [],
       isChartContent: true,
       chartPayload: parseChartPayload(cleanedRaw),
+      isInsightContent: false,
+      insightPayload: null,
       allowSqlDebug: false,
     };
+  }
+
+  const isInsightContent = trimmed.startsWith(INSIGHT_CONTENT_TAG);
+  if (isInsightContent) {
+    const insightPayload = parseInsightPayload(cleanedRaw);
+
+    if (insightPayload) {
+      return {
+        plainText: "",
+        sqlBlocks: [],
+        isChartContent: false,
+        chartPayload: null,
+        isInsightContent: true,
+        insightPayload,
+        allowSqlDebug: false,
+      };
+    }
   }
 
   const blocks: ParsedSqlBlock[] = [];
@@ -255,6 +309,8 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
       sqlBlocks: blocks,
       isChartContent: false,
       chartPayload: null,
+      isInsightContent: false,
+      insightPayload: null,
       allowSqlDebug,
     };
   }
@@ -264,6 +320,8 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
     sqlBlocks: [],
     isChartContent: false,
     chartPayload: null,
+    isInsightContent: false,
+    insightPayload: null,
     allowSqlDebug: false,
   };
 }
