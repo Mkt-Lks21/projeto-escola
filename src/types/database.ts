@@ -7,10 +7,12 @@ export interface Message {
 }
 
 export interface Conversation {
+  agent_id?: string | null;
   id: string;
   title: string;
   created_at: string;
   updated_at: string;
+  user_id?: string;
 }
 
 export interface LLMSettings {
@@ -21,6 +23,7 @@ export interface LLMSettings {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  user_id?: string;
 }
 
 export interface DatabaseMetadata {
@@ -43,9 +46,9 @@ export const OPENAI_MODELS = [
 ];
 
 export const GOOGLE_MODELS = [
-  "gemini-1.5-pro",
-  "gemini-1.5-flash",
-  "gemini-pro",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-pro",
 ];
 
 export interface Agent {
@@ -55,6 +58,7 @@ export interface Agent {
   system_prompt: string | null;
   created_at: string;
   updated_at: string;
+  user_id?: string;
 }
 
 export interface AgentTable {

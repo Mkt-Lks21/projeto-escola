@@ -6,6 +6,18 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+function extractBearerToken(req: Request): string | null {
+  const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+  if (!authHeader) return null;
+
+  const [scheme, token] = authHeader.split(" ");
+  if (!scheme || !token || scheme.toLowerCase() !== "bearer") {
+    return null;
+  }
+
+  return token.trim() || null;
+}
+
 function referencesNonPublicSchema(query: string): boolean {
   const normalized = query.toLowerCase();
   const schemaRefs = normalized.match(/\b([a-z_][a-z0-9_]*)\s*\./g) || [];
@@ -18,6 +30,33 @@ serve(async (req) => {
   }
 
   try {
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return new Response(
+        JSON.stringify({ error: "SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY sao obrigatorios." }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const accessToken = extractBearerToken(req);
+    if (!accessToken) {
+      return new Response(
+        JSON.stringify({ error: "Missing authorization header." }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const appSupabase = createClient(supabaseUrl, supabaseServiceKey);
+    const { data: authData, error: authError } = await appSupabase.auth.getUser(accessToken);
+    if (authError || !authData?.user) {
+      return new Response(
+        JSON.stringify({ error: "Invalid or expired token." }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     const externalUrl = Deno.env.get("EXTERNAL_SUPABASE_URL");
     const externalKey = Deno.env.get("EXTERNAL_SUPABASE_SERVICE_KEY");
 
