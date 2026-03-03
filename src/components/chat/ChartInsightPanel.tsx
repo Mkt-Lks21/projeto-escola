@@ -2,6 +2,7 @@ import Plot from "react-plotly.js";
 import type { Config as PlotlyConfig, Data as PlotlyData, Layout as PlotlyLayout } from "plotly.js";
 import { Loader2 } from "lucide-react";
 import { ParsedChartInsightPayload } from "@/lib/chat/assistantContentParser";
+import AssistantMarkdown from "./AssistantMarkdown";
 
 interface ChartInsightPanelProps {
   payload: ParsedChartInsightPayload | null;
@@ -77,9 +78,7 @@ export default function ChartInsightPanel({ payload }: ChartInsightPanelProps) {
             <div className="text-xs text-muted-foreground">{rowCount} linha(s) analisada(s)</div>
           )}
         </div>
-        <p className="text-sm leading-6 whitespace-pre-wrap break-words">
-          {insightText || "Nao foi possivel gerar a analise textual para este grafico."}
-        </p>
+        <AssistantMarkdown content={insightText || "Nao foi possivel gerar a analise textual para este grafico."} />
       </div>
     </div>
   );
