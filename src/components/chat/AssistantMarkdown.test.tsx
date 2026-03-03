@@ -37,4 +37,12 @@ describe("AssistantMarkdown", () => {
     expect(screen.getByRole("columnheader", { name: "Trimestre" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "Q1" })).toBeInTheDocument();
   });
+
+  it("renders bullet list markers from asterisk syntax", () => {
+    render(<AssistantMarkdown content={"* **asd**\n* segundo item"} />);
+
+    const items = screen.getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(screen.getByText("asd").tagName).toBe("STRONG");
+  });
 });

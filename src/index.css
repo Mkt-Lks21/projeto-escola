@@ -184,6 +184,26 @@
     padding-left: 1.2rem;
   }
 
+  .ai-markdown ul {
+    list-style-type: disc;
+  }
+
+  .ai-markdown ol {
+    list-style-type: decimal;
+  }
+
+  .ai-markdown ul ul {
+    list-style-type: circle;
+  }
+
+  .ai-markdown ol ol {
+    list-style-type: lower-alpha;
+  }
+
+  .ai-markdown li::marker {
+    color: hsl(var(--muted-foreground));
+  }
+
   .ai-markdown li + li {
     margin-top: 0.3rem;
   }
@@ -269,6 +289,10 @@
 
   .ai-markdown tbody tr:last-child td {
     border-bottom: 0;
+  }
+
+  .chat-scroll-area {
+    scrollbar-gutter: stable both-edges;
   }
 }
 
