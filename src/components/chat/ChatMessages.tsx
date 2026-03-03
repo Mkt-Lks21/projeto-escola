@@ -53,7 +53,7 @@ export default function ChatMessages({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-3 sm:px-4 md:px-6 pt-6 pb-40">
+    <div className="chat-scroll-area flex-1 overflow-y-auto px-3 sm:px-4 md:px-6 pt-6 pb-40">
       <div className="w-full max-w-4xl mx-auto space-y-4" data-testid="chat-messages-column">
         {messages.map((message) => (
           <ChatMessage key={message.id} message={message} onExecuteQuery={onExecuteQuery} />
