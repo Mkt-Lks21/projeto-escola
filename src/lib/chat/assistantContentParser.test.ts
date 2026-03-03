@@ -28,8 +28,32 @@ describe("assistantContentParser", () => {
 
     expect(parsed.isChartContent).toBe(true);
     expect(parsed.chartPayload?.success).toBe(true);
+    expect(parsed.isChartInsightContent).toBe(false);
     expect(parsed.isInsightContent).toBe(false);
     expect(parsed.sqlBlocks.length).toBe(0);
+  });
+
+  it("detects chart + insight payload content", () => {
+    const content =
+      '[CHART_INSIGHT_CONTENT] {"success":true,"row_count":8,"chart_payload":{"success":true,"plotly_figure":{"data":[{"type":"bar"}],"layout":{"title":"Comparativo"}}},"insight_text":"2025 ficou acima de 2024 em todos os trimestres.","analysis_scope":"broad","analysis_focus":"Comparacao 2024 vs 2025","warnings":["ok"]}';
+
+    const parsed = parseAssistantContent(content);
+
+    expect(parsed.isChartInsightContent).toBe(true);
+    expect(parsed.chartInsightPayload?.success).toBe(true);
+    expect(parsed.chartInsightPayload?.row_count).toBe(8);
+    expect(parsed.chartInsightPayload?.chart_payload?.plotly_figure?.data).toBeTruthy();
+    expect(parsed.isChartContent).toBe(false);
+    expect(parsed.isInsightContent).toBe(false);
+  });
+
+  it("falls back to plain text when chart + insight payload is invalid json", () => {
+    const content = '[CHART_INSIGHT_CONTENT] {"success":true';
+    const parsed = parseAssistantContent(content);
+
+    expect(parsed.isChartInsightContent).toBe(false);
+    expect(parsed.chartInsightPayload).toBeNull();
+    expect(parsed.plainText).toContain("[CHART_INSIGHT_CONTENT]");
   });
 
   it("detects insight payload content", () => {

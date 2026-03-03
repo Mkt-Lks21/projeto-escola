@@ -100,19 +100,51 @@ def infer_columns(df: pd.DataFrame, requested_chart_type: str) -> InferenceResul
 
     x_column, x_kind = _choose_x_axis(chart_type, ordered_columns, column_types)
     numeric_non_x = [column for column in column_types.numeric if column != x_column]
+    categorical_non_x = [
+        column for column in column_types.categorical if column != x_column
+    ]
 
-    # For bar/line comparison scenarios, keep all numeric columns as parallel series.
-    if chart_type in {"bar", "line"} and len(numeric_non_x) >= 2:
-        return InferenceResult(
-            chart_type=chart_type,
-            x_column=x_column,
-            y_column="__value",
-            mode="value",
-            x_kind=x_kind,
-            series_column="__series",
-            value_columns=numeric_non_x,
-            warnings=warnings,
+    if chart_type in {"bar", "line"}:
+        year_like_columns = [
+            column for column in numeric_non_x if _is_year_like_series(df[column])
+        ]
+        series_candidates = [*categorical_non_x, *year_like_columns]
+        value_candidates = [
+            column for column in numeric_non_x if column not in year_like_columns
+        ]
+
+        series_column = _choose_preferred_series_column(
+            series_candidates, ordered_columns
         )
+        value_column = _choose_preferred_value_column(
+            value_candidates, ordered_columns
+        )
+
+        # Long mode (period, series, value) has priority when available.
+        if series_column and value_column:
+            return InferenceResult(
+                chart_type=chart_type,
+                x_column=x_column,
+                y_column=value_column,
+                mode="value",
+                x_kind=x_kind,
+                series_column=series_column,
+                value_columns=[],
+                warnings=warnings,
+            )
+
+        # Wide mode (period, metric_a, metric_b...) remains as fallback.
+        if len(value_candidates) >= 2:
+            return InferenceResult(
+                chart_type=chart_type,
+                x_column=x_column,
+                y_column="__value",
+                mode="value",
+                x_kind=x_kind,
+                series_column="__series",
+                value_columns=value_candidates,
+                warnings=warnings,
+            )
 
     y_column = _pick_first(numeric_non_x)
     mode: Literal["value", "count"] = "value" if y_column else "count"
@@ -185,3 +217,82 @@ def _pick_first(columns: list[str], exclude: set[str] | None = None) -> str | No
         if column not in excluded:
             return column
     return None
+
+
+def _is_year_like_series(series: pd.Series) -> bool:
+    non_null = series.dropna()
+    if non_null.empty:
+        return False
+
+    numeric = pd.to_numeric(non_null, errors="coerce")
+    if numeric.isna().any():
+        return False
+
+    rounded = numeric.round()
+    if ((numeric - rounded).abs() > 1e-9).any():
+        return False
+
+    years = rounded.astype("int64")
+    unique_count = years.nunique(dropna=True)
+    if unique_count < 2 or unique_count > 20:
+        return False
+
+    return bool(years.between(1900, 2100).all())
+
+
+def _choose_preferred_series_column(
+    candidates: list[str], ordered_columns: list[str]
+) -> str | None:
+    if not candidates:
+        return None
+
+    order_index = {name: index for index, name in enumerate(ordered_columns)}
+
+    def score(column: str) -> tuple[int, int]:
+        name = column.lower()
+        keywords = [
+            "ano",
+            "year",
+            "exercicio",
+            "safra",
+            "periodo",
+            "serie",
+            "segmento",
+            "categoria",
+        ]
+        for rank, keyword in enumerate(keywords):
+            if keyword in name:
+                return rank, order_index.get(column, 10_000)
+        return 99, order_index.get(column, 10_000)
+
+    return min(candidates, key=score)
+
+
+def _choose_preferred_value_column(
+    candidates: list[str], ordered_columns: list[str]
+) -> str | None:
+    if not candidates:
+        return None
+
+    order_index = {name: index for index, name in enumerate(ordered_columns)}
+
+    def score(column: str) -> tuple[int, int]:
+        name = column.lower()
+        keywords = [
+            "total",
+            "valor",
+            "venda",
+            "receita",
+            "fatur",
+            "lucro",
+            "margem",
+            "quant",
+            "qtd",
+            "volume",
+        ]
+        for rank, keyword in enumerate(keywords):
+            if keyword in name:
+                return rank, order_index.get(column, 10_000)
+        return 99, order_index.get(column, 10_000)
+
+    return min(candidates, key=score)
