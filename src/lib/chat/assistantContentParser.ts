@@ -14,6 +14,16 @@ export interface ParsedChartPayload {
   };
 }
 
+export interface ParsedChartInsightPayload {
+  success?: boolean;
+  row_count?: number;
+  chart_payload?: ParsedChartPayload;
+  insight_text?: string;
+  analysis_scope?: "broad" | "specific";
+  analysis_focus?: string;
+  warnings?: string[];
+}
+
 export interface ParsedInsightPayload {
   success?: boolean;
   analysis_scope?: "broad" | "specific";
@@ -29,6 +39,8 @@ export interface ParsedAssistantContent {
   sqlBlocks: ParsedSqlBlock[];
   isChartContent: boolean;
   chartPayload: ParsedChartPayload | null;
+  isChartInsightContent: boolean;
+  chartInsightPayload: ParsedChartInsightPayload | null;
   isInsightContent: boolean;
   insightPayload: ParsedInsightPayload | null;
   allowSqlDebug: boolean;
@@ -37,6 +49,7 @@ export interface ParsedAssistantContent {
 const SQL_FENCE_REGEX = /```(?:sql|postgres|postgresql)?\s*([\s\S]*?)```/gi;
 const AUTO_EXECUTE_REGEX = /\[AUTO_EXECUTE\]/gi;
 const CHART_CONTENT_TAG = "[CHART_CONTENT]";
+const CHART_INSIGHT_CONTENT_TAG = "[CHART_INSIGHT_CONTENT]";
 const INSIGHT_CONTENT_TAG = "[INSIGHT_CONTENT]";
 
 function sanitizeSql(query: string): string {
@@ -237,6 +250,28 @@ function parseChartPayload(raw: string): ParsedChartPayload | null {
   }
 }
 
+function parseChartInsightPayload(raw: string): ParsedChartInsightPayload | null {
+  const markerIndex = raw.indexOf(CHART_INSIGHT_CONTENT_TAG);
+  if (markerIndex < 0) {
+    return null;
+  }
+
+  const jsonCandidate = raw.slice(markerIndex + CHART_INSIGHT_CONTENT_TAG.length).trim();
+  if (!jsonCandidate) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(jsonCandidate);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as ParsedChartInsightPayload;
+  } catch {
+    return null;
+  }
+}
+
 function parseInsightPayload(raw: string): ParsedInsightPayload | null {
   const markerIndex = raw.indexOf(INSIGHT_CONTENT_TAG);
   if (markerIndex < 0) {
@@ -264,6 +299,25 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
   const allowSqlDebug = /\[SQL_DEBUG_ALLOWED\]/i.test(raw);
   const cleanedRaw = raw.replace(/\[SQL_DEBUG_ALLOWED\]/gi, "");
   const trimmed = cleanedRaw.trimStart();
+  const isChartInsightContent = trimmed.startsWith(CHART_INSIGHT_CONTENT_TAG);
+  if (isChartInsightContent) {
+    const chartInsightPayload = parseChartInsightPayload(cleanedRaw);
+
+    if (chartInsightPayload) {
+      return {
+        plainText: "",
+        sqlBlocks: [],
+        isChartContent: false,
+        chartPayload: null,
+        isChartInsightContent: true,
+        chartInsightPayload,
+        isInsightContent: false,
+        insightPayload: null,
+        allowSqlDebug: false,
+      };
+    }
+  }
+
   const isChartContent = trimmed.startsWith(CHART_CONTENT_TAG);
 
   if (isChartContent) {
@@ -272,6 +326,8 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
       sqlBlocks: [],
       isChartContent: true,
       chartPayload: parseChartPayload(cleanedRaw),
+      isChartInsightContent: false,
+      chartInsightPayload: null,
       isInsightContent: false,
       insightPayload: null,
       allowSqlDebug: false,
@@ -288,6 +344,8 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
         sqlBlocks: [],
         isChartContent: false,
         chartPayload: null,
+        isChartInsightContent: false,
+        chartInsightPayload: null,
         isInsightContent: true,
         insightPayload,
         allowSqlDebug: false,
@@ -309,6 +367,8 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
       sqlBlocks: blocks,
       isChartContent: false,
       chartPayload: null,
+      isChartInsightContent: false,
+      chartInsightPayload: null,
       isInsightContent: false,
       insightPayload: null,
       allowSqlDebug,
@@ -320,6 +380,8 @@ export function parseAssistantContent(content: string): ParsedAssistantContent {
     sqlBlocks: [],
     isChartContent: false,
     chartPayload: null,
+    isChartInsightContent: false,
+    chartInsightPayload: null,
     isInsightContent: false,
     insightPayload: null,
     allowSqlDebug: false,

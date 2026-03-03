@@ -109,7 +109,29 @@ def _prepare_grouped_frame(
         metric_column = "count"
         series_column = None
     else:
-        if inference.series_column and inference.value_columns:
+        if inference.series_column and inference.y_column and not inference.value_columns:
+            series_column = inference.series_column
+            y_column = inference.y_column
+            plot_df = df[[x_column, series_column, y_column]].copy()
+            if inference.x_kind == "datetime":
+                plot_df[x_column] = pd.to_datetime(
+                    plot_df[x_column],
+                    errors="coerce",
+                    utc=False,
+                    format="mixed",
+                )
+            plot_df[y_column] = pd.to_numeric(plot_df[y_column], errors="coerce")
+            plot_df[series_column] = plot_df[series_column].astype("string")
+            plot_df = plot_df.dropna(subset=[x_column, y_column, series_column])
+
+            grouped_df = (
+                plot_df.groupby(
+                    [x_column, series_column], dropna=False, sort=False, as_index=False
+                )[y_column].sum()
+            )
+            grouped_df[series_column] = grouped_df[series_column].astype(str)
+            metric_column = y_column
+        elif inference.series_column and inference.value_columns:
             series_column = inference.series_column
             value_column = inference.y_column or "__value"
             plot_df = df[[x_column, *inference.value_columns]].copy()
@@ -142,6 +164,7 @@ def _prepare_grouped_frame(
                     [x_column, series_column], dropna=False, sort=False, as_index=False
                 )[value_column].sum()
             )
+            grouped_df[series_column] = grouped_df[series_column].astype(str)
             metric_column = value_column
         else:
             series_column = None
@@ -183,6 +206,8 @@ def _prepare_grouped_frame(
         grouped_df = grouped_df.sort_values(by=sort_columns, kind="stable")
 
     return grouped_df, metric_column, series_column
+
+
 def _apply_default_layout(fig: Any) -> None:
     fig.update_layout(
         template="plotly_white",

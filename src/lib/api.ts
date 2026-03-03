@@ -1,6 +1,18 @@
 import { supabase } from "@/integrations/supabase/client";
 import { Message, Conversation, LLMSettings, DatabaseMetadata, Agent, AgentTable } from "@/types/database";
 
+function getSupabasePublicKey(): string {
+  const key =
+    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+  if (!key) {
+    throw new Error("Missing Supabase publishable key in environment.");
+  }
+
+  return key;
+}
+
 export async function getConversations(): Promise<Conversation[]> {
   const { data, error } = await supabase
     .from("conversations")
@@ -103,7 +115,7 @@ export async function refreshMetadata(): Promise<void> {
 
 export async function fetchExternalMetadata(): Promise<DatabaseMetadata[]> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-  const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  const supabaseKey = getSupabasePublicKey();
 
   const response = await fetch(`${supabaseUrl}/functions/v1/external-db-proxy`, {
     method: "POST",
@@ -145,7 +157,7 @@ export async function cacheExternalMetadata(_metadata: DatabaseMetadata[]): Prom
 
 export async function executeExternalQuery(query: string): Promise<any[]> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-  const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  const supabaseKey = getSupabasePublicKey();
 
   const response = await fetch(`${supabaseUrl}/functions/v1/external-db-proxy`, {
     method: "POST",
@@ -172,7 +184,7 @@ export async function sendChatMessage(
   agentId?: string
 ): Promise<Response> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-  const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  const supabaseKey = getSupabasePublicKey();
 
   return fetch(`${supabaseUrl}/functions/v1/chat`, {
     method: "POST",

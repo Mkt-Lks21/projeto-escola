@@ -16,6 +16,7 @@ const sseHeaders = {
 const DEFAULT_PYTHON_API_URL = "https://arquem-python-api.onrender.com";
 const SQL_DEBUG_ALLOWED_TAG = "[SQL_DEBUG_ALLOWED]";
 const INSIGHT_CONTENT_TAG = "[INSIGHT_CONTENT]";
+const CHART_INSIGHT_CONTENT_TAG = "[CHART_INSIGHT_CONTENT]";
 const MAX_INSIGHT_ROWS = 200;
 const INSIGHT_TEMPERATURE = 0.4;
 
@@ -62,6 +63,16 @@ type InsightContentPayload = {
   columns: string[];
   rows: Record<string, unknown>[];
   insight_text: string;
+};
+
+type ChartInsightContentPayload = {
+  success: boolean;
+  row_count: number;
+  chart_payload: Record<string, unknown>;
+  insight_text: string;
+  analysis_scope: InsightScope;
+  analysis_focus: string;
+  warnings: string[];
 };
 
 type ChatMessage = {
@@ -277,6 +288,7 @@ serve(async (req) => {
     const externalSupabase = createClient(externalUrl, externalKey);
     const lastUserMessage = getLastUserMessage(messages);
     const userIntent = detectUserIntent(lastUserMessage);
+    const chartAndInsightRequested = detectChartAndInsightIntent(lastUserMessage);
 
     let metadataContext = "";
     try {
@@ -309,7 +321,11 @@ serve(async (req) => {
 
     const targetDescription = "BANCO DE DADOS EXTERNO no Supabase (apenas schema public)";
     const behaviorPrompt = buildBehaviorPrompt(agentContext, targetDescription);
-    const technicalInstructions = buildTechnicalInstructions(userIntent, lastUserMessage);
+    const technicalInstructions = buildTechnicalInstructions(
+      userIntent,
+      lastUserMessage,
+      chartAndInsightRequested,
+    );
     const systemPrompt = `${behaviorPrompt}\n${technicalInstructions}\n${metadataContext}`;
 
     const llmOptions: LLMCallOptions = {
@@ -330,6 +346,29 @@ serve(async (req) => {
     if (llmResult.type === "tool_call_chart") {
       const queryData = await executeChartQuery(externalSupabase, llmResult.args.sql_query);
       const pythonResponse = await generateChartFromPython(queryData, llmResult.args);
+
+      if (chartAndInsightRequested) {
+        const insightArgs = buildInsightArgsFromChartRequest(lastUserMessage);
+        const insightText = await synthesizeInsightText(
+          activeSettings,
+          lastUserMessage,
+          insightArgs,
+          queryData,
+        );
+
+        const chartInsightPayload: ChartInsightContentPayload = {
+          success: true,
+          row_count: queryData.length,
+          chart_payload: pythonResponse,
+          insight_text: insightText,
+          analysis_scope: insightArgs.analysis_scope,
+          analysis_focus: insightArgs.analysis_focus,
+          warnings: extractChartWarnings(pythonResponse),
+        };
+
+        return createChartInsightSseResponse(chartInsightPayload);
+      }
+
       return createChartSseResponse(pythonResponse);
     }
 
@@ -407,10 +446,16 @@ CONTEXTO: O usuario esta usando o ${targetDescription}.
 RESTRICAO: voce so pode usar tabelas do schema public.`;
 }
 
-function buildTechnicalInstructions(userIntent: UserIntent, lastUserMessage: string): string {
+function buildTechnicalInstructions(
+  userIntent: UserIntent,
+  lastUserMessage: string,
+  chartAndInsightRequested: boolean,
+): string {
   const technicalSqlAllowed = userIntent === "explicit_sql";
   const isComparativeChartRequest =
     userIntent === "chart" && detectComparisonIntent(lastUserMessage);
+  const isCombinedChartInsightRequest =
+    userIntent === "chart" && chartAndInsightRequested;
 
   if (technicalSqlAllowed) {
     return `
@@ -448,20 +493,30 @@ REGRA DE OURO:
 - Nunca exponha SQL ao usuario final em respostas comuns
 - Nunca retorne [AUTO_EXECUTE] fora do modo SQL explicito`;
 
-  if (!isComparativeChartRequest) {
-    return baseInstructions;
-  }
+  let output = baseInstructions;
 
-  return `${baseInstructions}
+  if (isComparativeChartRequest) {
+    output = `${output}
 
 REGRAS ADICIONAIS PARA PEDIDOS DE COMPARACAO:
-- Quando o usuario pedir comparacao (ex: 2024 vs 2025), a SQL DEVE retornar ambas as series solicitadas.
-- Formatos aceitos:
-  1) Wide: periodo + uma coluna numerica por serie (ex: trimestre, vendas_2024, vendas_2025)
-  2) Long: periodo + serie + valor
-- Para comparacoes trimestrais/anuais, agregue por periodo e serie, com ordenacao consistente.
+- Quando o usuario pedir comparacao explicita (ex: 2024 vs 2025), a SQL DEVE retornar ambas as series.
+- Formato preferencial: Long (periodo, serie, valor), por exemplo: trimestre, ano, total_vendas.
+- Formato wide tambem e aceito: periodo + uma coluna numerica por serie (ex: trimestre, vendas_2024, vendas_2025).
+- Para comparacoes trimestrais/anuais, agregue por periodo + serie e ordene de forma estavel.
 - Quando fizer sentido, use COALESCE para evitar valores nulos nos agregados.
-- Evite consultas que tragam apenas uma serie quando a pergunta exigir comparacao explicita.`;
+- Evite consultas que retornem apenas uma serie quando a pergunta exigir comparacao.`;
+  }
+
+  if (isCombinedChartInsightRequest) {
+    output = `${output}
+
+REGRAS PARA PEDIDO COMBINADO (GRAFICO + ANALISE):
+- Quando o usuario pedir grafico e analise na mesma pergunta, gere a SQL do grafico de forma que os dados sustentem analise textual.
+- Priorize metricas comparaveis por periodo e serie para permitir leitura executiva (ex: trimestre, ano, total_vendas).
+- Evite SQL excessivamente granular quando o objetivo for comparacao e interpretacao de negocio.`;
+  }
+
+  return output;
 }
 
 function normalizeRequestMessages(messages: unknown): ChatMessage[] {
@@ -557,10 +612,63 @@ function detectComparisonIntent(lastUserMessage: string): boolean {
   return hasComparisonKeyword || (hasMultipleYears && hasPeriodSignal);
 }
 
-function normalizeProvider(provider: unknown): ProviderName | null {
-  if (provider === "openai" || provider === "gemini") {
-    return provider;
+function detectChartAndInsightIntent(lastUserMessage: string): boolean {
+  const normalized = normalizeIntentText(lastUserMessage || "");
+  if (!normalized) {
+    return false;
   }
+
+  const asksChart =
+    /\b(grafico|plot|visualizacao|dashboard|pizza|barras|linha|scatter|dispersao)\b/.test(
+      normalized,
+    ) || /\btendencia visual\b/.test(normalized);
+
+  const asksInsight =
+    /\b(analise|analisar|insight|resumo|tendencia|desempenho|diagnostico|explicar|avaliar|interpretar)\b/.test(
+      normalized,
+    ) || /\b(comentario|comente|conclusao)\b/.test(normalized);
+
+  return asksChart && asksInsight;
+}
+
+function buildInsightArgsFromChartRequest(userQuestion: string): InsightToolArgs {
+  const normalized = normalizeIntentText(userQuestion || "");
+  const asksDeepAnalysis =
+    /\b(analise|analisar|insight|resumo|diagnostico|desempenho|tendencia|avaliar|interpretar|compar)\b/.test(
+      normalized,
+    );
+  const looksDirectQuestion =
+    /\b(qual|quanto|quantos|quando|onde|quem)\b/.test(normalized) && !asksDeepAnalysis;
+
+  const analysisScope: InsightScope = looksDirectQuestion ? "specific" : "broad";
+  const focusText = (userQuestion || "").trim();
+  const analysisFocus = focusText
+    ? `Analise do grafico: ${focusText.slice(0, 180)}`
+    : "Analise de negocio baseada no grafico";
+
+  return {
+    sql_query: "",
+    analysis_scope: analysisScope,
+    analysis_focus: analysisFocus,
+  };
+}
+
+function normalizeProvider(provider: unknown): ProviderName | null {
+  if (typeof provider !== "string") {
+    return null;
+  }
+
+  const normalized = provider.trim().toLowerCase();
+
+  if (normalized === "openai") {
+    return "openai";
+  }
+
+  // Backward compatibility with older settings saved as "google".
+  if (normalized === "gemini" || normalized === "google") {
+    return "gemini";
+  }
+
   return null;
 }
 
@@ -1163,7 +1271,7 @@ Escopo solicitado para esta resposta: ${scope}.
 
 Regras adicionais:
 - Cite numeros concretos (valores absolutos, variacoes, ranking, medias) sempre que possivel.
-- Nao retorne JSON, tabela crua, SQL, [AUTO_EXECUTE], [CHART_CONTENT] ou instrucoes tecnicas.
+- Nao retorne JSON, tabela crua, SQL, [AUTO_EXECUTE], [CHART_CONTENT], [CHART_INSIGHT_CONTENT] ou instrucoes tecnicas.
 - Se nao houver dados suficientes, diga isso com clareza e sugira a proxima analise mais util.
 - Linguagem: profissional, acessivel e orientada a decisao.
 
@@ -1233,6 +1341,7 @@ function sanitizeInsightNarrative(text: string): string {
   let output = text || "";
   output = output.replace(/\[AUTO_EXECUTE\]/gi, "");
   output = output.replace(/\[CHART_CONTENT\]/gi, "");
+  output = output.replace(/\[CHART_INSIGHT_CONTENT\]/gi, "");
   output = output.replace(/\[INSIGHT_CONTENT\]/gi, "");
   output = output.replace(/\[RESULTADO_DA_QUERY\]/gi, "");
   output = output.replace(/\[SQL_DEBUG_ALLOWED\]/gi, "");
@@ -1249,6 +1358,7 @@ function sanitizeUserFacingText(text: string, allowTechnicalSql: boolean): strin
   let output = text || "";
   output = output.replace(/\[AUTO_EXECUTE\]/gi, "");
   output = output.replace(/\[CHART_CONTENT\]/gi, "");
+  output = output.replace(/\[CHART_INSIGHT_CONTENT\]/gi, "");
   output = output.replace(/\[INSIGHT_CONTENT\]/gi, "");
   output = output.replace(/\[RESULTADO_DA_QUERY\]/gi, "");
   output = output.replace(/\[SQL_DEBUG_ALLOWED\]/gi, "");
@@ -1281,9 +1391,25 @@ function createChartSseResponse(pythonPayload: Record<string, unknown>): Respons
   return createSseResponse([chartContent]);
 }
 
+function createChartInsightSseResponse(payload: ChartInsightContentPayload): Response {
+  const chartInsightContent = `${CHART_INSIGHT_CONTENT_TAG} ${JSON.stringify(payload)}`;
+  return createSseResponse([chartInsightContent]);
+}
+
 function createInsightSseResponse(payload: InsightContentPayload): Response {
   const insightContent = `${INSIGHT_CONTENT_TAG} ${JSON.stringify(payload)}`;
   return createSseResponse([insightContent]);
+}
+
+function extractChartWarnings(pythonPayload: Record<string, unknown>): string[] {
+  const rawWarnings = pythonPayload?.warnings;
+  if (!Array.isArray(rawWarnings)) {
+    return [];
+  }
+
+  return rawWarnings
+    .map((warning) => (typeof warning === "string" ? warning.trim() : ""))
+    .filter((warning) => warning.length > 0);
 }
 
 function createSseResponse(chunks: string[]): Response {

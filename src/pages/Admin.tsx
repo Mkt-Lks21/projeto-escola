@@ -37,7 +37,7 @@ import { RefreshCw, Save, Database, Key, Plug, CheckCircle2, XCircle, ArrowLeft 
 import { toast } from "sonner";
 
 const formSchema = z.object({
-  provider: z.enum(["openai", "google"]),
+  provider: z.enum(["openai", "gemini"]),
   model: z.string().min(1, "Selecione um modelo"),
   api_key: z.string().min(1, "API Key é obrigatória"),
 });
@@ -66,7 +66,12 @@ export default function Admin() {
 
   useEffect(() => {
     if (settings) {
-      form.setValue("provider", settings.provider as "openai" | "google");
+      const normalizedProvider =
+        typeof settings.provider === "string" &&
+        settings.provider.toLowerCase() === "google"
+          ? "gemini"
+          : settings.provider;
+      form.setValue("provider", normalizedProvider as "openai" | "gemini");
       form.setValue("model", settings.model);
       form.setValue("api_key", settings.api_key);
     }
@@ -104,7 +109,13 @@ export default function Admin() {
     
     try {
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+      const supabaseKey =
+        import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+        import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+      if (!supabaseKey) {
+        throw new Error("Missing Supabase publishable key in environment.");
+      }
 
       const response = await fetch(`${supabaseUrl}/functions/v1/external-db-proxy`, {
         method: "POST",
@@ -209,7 +220,7 @@ export default function Admin() {
                             </FormControl>
                             <SelectContent>
                               <SelectItem value="openai">OpenAI</SelectItem>
-                              <SelectItem value="google">Google (Gemini)</SelectItem>
+                              <SelectItem value="gemini">Google (Gemini)</SelectItem>
                             </SelectContent>
                           </Select>
                           <FormMessage />
@@ -445,3 +456,5 @@ export default function Admin() {
     </div>
   );
 }
+
+
