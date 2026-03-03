@@ -34,8 +34,11 @@ export default function ChatInput({ onSend, isLoading }: ChatInputProps) {
   };
 
   return (
-    <div className="absolute inset-x-0 bottom-0 z-20 pointer-events-none p-4">
-      <div className="pointer-events-auto max-w-4xl mx-auto space-y-2 glass-subtle rounded-2xl p-3 shadow-[0_18px_45px_rgba(0,0,0,0.14)] border border-white/45">
+    <div className="absolute inset-x-0 bottom-0 z-20 pointer-events-none px-3 sm:px-4 md:px-6 pb-4 pt-3">
+      <div
+        className="pointer-events-auto w-full max-w-4xl mx-auto space-y-2 glass-subtle rounded-2xl p-3 shadow-[0_18px_45px_rgba(0,0,0,0.14)] border border-white/45"
+        data-testid="chat-input-column"
+      >
         <div className="flex gap-2">
           <div className="flex-1">
             <Textarea

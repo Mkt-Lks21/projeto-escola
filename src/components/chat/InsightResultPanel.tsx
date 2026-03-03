@@ -9,6 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import AssistantMarkdown from "./AssistantMarkdown";
 
 interface InsightResultPanelProps {
   payload: ParsedInsightPayload | null;
@@ -145,9 +146,7 @@ export default function InsightResultPanel({ payload }: InsightResultPanelProps)
 
       <div className="rounded-xl border border-white/35 glass-subtle p-3">
         <div className="text-xs font-semibold text-muted-foreground mb-1">Insight</div>
-        <p className="text-sm leading-6 whitespace-pre-wrap break-words">
-          {insightText || "Nao foi possivel gerar um insight textual para esta analise."}
-        </p>
+        <AssistantMarkdown content={insightText || "Nao foi possivel gerar um insight textual para esta analise."} />
       </div>
     </div>
   );

@@ -22,6 +22,33 @@ describe("assistantContentParser", () => {
     expect(parsed.plainText).toContain("Vou executar a consulta");
   });
 
+  it("preserves markdown while removing technical markers", () => {
+    const content = [
+      "[SQL_DEBUG_ALLOWED]",
+      "## Analise trimestral",
+      "",
+      "**Resumo:**",
+      "- 2025 ficou acima de 2024",
+      "",
+      "[AUTO_EXECUTE]",
+      "```sql",
+      "SELECT 1 AS exemplo;",
+      "```",
+      "[RESULTADO_DA_QUERY]",
+    ].join("\n");
+
+    const parsed = parseAssistantContent(content);
+
+    expect(parsed.plainText).toContain("## Analise trimestral");
+    expect(parsed.plainText).toContain("**Resumo:**");
+    expect(parsed.plainText).toContain("- 2025 ficou acima de 2024");
+    expect(parsed.plainText).not.toContain("[SQL_DEBUG_ALLOWED]");
+    expect(parsed.plainText).not.toContain("[AUTO_EXECUTE]");
+    expect(parsed.plainText).not.toContain("SELECT 1 AS exemplo");
+    expect(parsed.plainText).not.toContain("```sql");
+    expect(parsed.sqlBlocks.length).toBe(1);
+  });
+
   it("keeps chart payload detection intact", () => {
     const content = `[CHART_CONTENT] {"success":true,"plotly_figure":{"data":[{"type":"bar"}],"layout":{"title":"Vendas"}}}`;
     const parsed = parseAssistantContent(content);

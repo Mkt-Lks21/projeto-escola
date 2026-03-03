@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import QueryResultTable from "./QueryResultTable";
 import InsightResultPanel from "./InsightResultPanel";
 import ChartInsightPanel from "./ChartInsightPanel";
+import AssistantMarkdown from "./AssistantMarkdown";
 import Plot from "react-plotly.js";
 import type { Config as PlotlyConfig, Data as PlotlyData, Layout as PlotlyLayout } from "plotly.js";
 import { ParsedSqlBlock, parseAssistantContent } from "@/lib/chat/assistantContentParser";
@@ -178,7 +179,7 @@ export default function ChatMessage({
         ) : sqlBlocks.length > 0 && canRenderSql ? (
           <div className="space-y-4">
             {plainAssistantText && (
-              <p className="text-sm leading-6 whitespace-pre-wrap break-words">{plainAssistantText}</p>
+              <AssistantMarkdown content={plainAssistantText} />
             )}
 
             {sqlBlocks.map((block, index) => {
@@ -245,9 +246,9 @@ export default function ChatMessage({
             })}
           </div>
         ) : (
-          <p className="text-sm leading-6 whitespace-pre-wrap break-words">
-            {plainAssistantText || (sqlBlocks.length > 0 ? "Conteudo tecnico oculto." : "Sem conteudo para exibir.")}
-          </p>
+          <AssistantMarkdown
+            content={plainAssistantText || (sqlBlocks.length > 0 ? "Conteudo tecnico oculto." : "Sem conteudo para exibir.")}
+          />
         )}
       </div>
     </div>
