@@ -19,6 +19,7 @@ const INSIGHT_CONTENT_TAG = "[INSIGHT_CONTENT]";
 const CHART_INSIGHT_CONTENT_TAG = "[CHART_INSIGHT_CONTENT]";
 const MAX_INSIGHT_ROWS = 200;
 const INSIGHT_TEMPERATURE = 0.4;
+const USAGE_SAFETY_MARGIN_TOKENS = 2000;
 
 const FORBIDDEN_KEYWORDS = [
   "INSERT",
@@ -97,8 +98,36 @@ type LLMResult =
   | { type: "tool_call_chart"; args: ChartToolArgs }
   | { type: "tool_call_insight"; args: InsightToolArgs };
 
+type TokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+type LLMProviderResponse = {
+  result: LLMResult;
+  usage: TokenUsage;
+};
+
 type AuthenticatedUser = {
   id: string;
+};
+
+type BillingUsageSnapshot = {
+  user_id: string;
+  aces_id: number | null;
+  plan_id: string;
+  plan_name: string;
+  monthly_token_limit: number;
+  monthly_credit_limit: number;
+  cycle_start_at: string;
+  cycle_end_at: string;
+  tokens_used: number;
+  credits_used: number;
+  usd_spent: number;
+  usage_percent: number;
+  remaining_tokens: number;
+  remaining_credits: number;
 };
 
 const OPENAI_TOOLS = [
@@ -242,6 +271,24 @@ serve(async (req) => {
     const body = await req.json();
     const messages = normalizeRequestMessages(body?.messages);
     const agentId = typeof body?.agentId === "string" ? body.agentId : null;
+    const conversationId = typeof body?.conversationId === "string" ? body.conversationId : null;
+    const interactionId = crypto.randomUUID();
+
+    if (conversationId) {
+      const { data: conversation } = await supabase
+        .from("conversations")
+        .select("id")
+        .eq("id", conversationId)
+        .eq("user_id", authenticatedUser.id)
+        .maybeSingle();
+
+      if (!conversation) {
+        return createJsonResponse(
+          { error: "Conversa nao encontrada para este usuario." },
+          404,
+        );
+      }
+    }
 
     const { data: settings, error: settingsError } = await supabase
       .from("llm_settings")
@@ -270,6 +317,50 @@ serve(async (req) => {
       apiKey: settings.api_key,
       model: settings.model,
     };
+
+    const billingSnapshot = await getBillingUsageSnapshot(supabase, authenticatedUser.id);
+    if (!billingSnapshot) {
+      return createJsonResponse(
+        { code: "PROFILE_NOT_FOUND", message: "Perfil de billing nao encontrado para o usuario." },
+        403,
+      );
+    }
+
+    if (billingSnapshot.aces_id === null) {
+      return createJsonResponse(
+        {
+          code: "USER_NOT_LINKED_TO_ACES",
+          message: "Seu usuario nao esta vinculado a nenhuma empresa (aces_id).",
+        },
+        403,
+      );
+    }
+
+    if (billingSnapshot.remaining_tokens <= USAGE_SAFETY_MARGIN_TOKENS) {
+      return createJsonResponse(
+        {
+          code: "USAGE_LIMIT_REACHED",
+          message: "Seu limite mensal foi atingido. Aguarde o proximo reset para continuar.",
+          usage: buildUsagePayload(billingSnapshot),
+        },
+        429,
+      );
+    }
+
+    const pricingExists = await hasActiveModelPricing(
+      supabase,
+      activeSettings.provider,
+      activeSettings.model,
+    );
+    if (!pricingExists) {
+      return createJsonResponse(
+        {
+          code: "MODEL_PRICING_NOT_FOUND",
+          message: `Nao ha precificacao ativa para ${activeSettings.provider}:${activeSettings.model}.`,
+        },
+        500,
+      );
+    }
 
     let agentContext: { agent: any; tables: any[] } | null = null;
     if (agentId) {
@@ -356,15 +447,26 @@ serve(async (req) => {
       temperature: userIntent === "insight" ? INSIGHT_TEMPERATURE : undefined,
     };
 
-    let llmResult = await callProvider(activeSettings, systemPrompt, messages, llmOptions);
+    let totalUsage = emptyUsage();
+    const primaryResponse = await callProvider(activeSettings, systemPrompt, messages, llmOptions);
+    totalUsage = mergeUsage(totalUsage, primaryResponse.usage);
+    let llmResult = primaryResponse.result;
 
     if (llmResult.type === "text" && (userIntent === "chart" || userIntent === "insight")) {
       const forcedToolName: ToolName = userIntent === "chart" ? "generate_chart" : "generate_insight";
       const forcedResult = await tryForceToolCall(activeSettings, systemPrompt, messages, forcedToolName);
       if (forcedResult) {
-        llmResult = forcedResult;
+        totalUsage = mergeUsage(totalUsage, forcedResult.usage);
+        if (
+          forcedResult.result.type === "tool_call_chart" ||
+          forcedResult.result.type === "tool_call_insight"
+        ) {
+          llmResult = forcedResult.result;
+        }
       }
     }
+
+    let responseToReturn: Response;
 
     if (llmResult.type === "tool_call_chart") {
       const queryData = await executeChartQuery(externalSupabase, llmResult.args.sql_query);
@@ -372,47 +474,104 @@ serve(async (req) => {
 
       if (chartAndInsightRequested) {
         const insightArgs = buildInsightArgsFromChartRequest(lastUserMessage);
-        const insightText = await synthesizeInsightText(
+        const insightSynthesis = await synthesizeInsightText(
           activeSettings,
           lastUserMessage,
           insightArgs,
           queryData,
         );
+        totalUsage = mergeUsage(totalUsage, insightSynthesis.usage);
 
         const chartInsightPayload: ChartInsightContentPayload = {
           success: true,
           row_count: queryData.length,
           chart_payload: pythonResponse,
-          insight_text: insightText,
+          insight_text: insightSynthesis.text,
           analysis_scope: insightArgs.analysis_scope,
           analysis_focus: insightArgs.analysis_focus,
           warnings: extractChartWarnings(pythonResponse),
         };
 
-        return createChartInsightSseResponse(chartInsightPayload);
+        responseToReturn = createChartInsightSseResponse(chartInsightPayload);
+      } else {
+        responseToReturn = createChartSseResponse(pythonResponse);
       }
-
-      return createChartSseResponse(pythonResponse);
-    }
-
-    if (llmResult.type === "tool_call_insight") {
-      const insightPayload = await runInsightFlow(
+    } else if (llmResult.type === "tool_call_insight") {
+      const insightResult = await runInsightFlow(
         activeSettings,
         externalSupabase,
         lastUserMessage,
         llmResult.args,
       );
-      return createInsightSseResponse(insightPayload);
+      totalUsage = mergeUsage(totalUsage, insightResult.usage);
+      responseToReturn = createInsightSseResponse(insightResult.payload);
+    } else {
+      let finalText = sanitizeUserFacingText(llmResult.text, userIntent === "explicit_sql");
+      if (userIntent === "explicit_sql" && containsSqlExecutionContent(finalText)) {
+        finalText = `${SQL_DEBUG_ALLOWED_TAG}\n${finalText}`;
+      }
+      responseToReturn = createTextSseResponse(finalText);
     }
 
-    let finalText = sanitizeUserFacingText(llmResult.text, userIntent === "explicit_sql");
-    if (userIntent === "explicit_sql" && containsSqlExecutionContent(finalText)) {
-      finalText = `${SQL_DEBUG_ALLOWED_TAG}\n${finalText}`;
+    if (totalUsage.totalTokens > 0) {
+      await recordUsageEvent(supabase, {
+        userId: authenticatedUser.id,
+        conversationId,
+        interactionId,
+        provider: activeSettings.provider,
+        model: activeSettings.model,
+        usage: totalUsage,
+        metadata: {
+          user_intent: userIntent,
+          chart_and_insight_requested: chartAndInsightRequested,
+          agent_id: agentId,
+        },
+      });
     }
 
-    return createTextSseResponse(finalText);
+    return responseToReturn;
   } catch (error) {
     console.error("Chat error:", error);
+    if (error instanceof Error && error.message === "USER_NOT_LINKED_TO_ACES") {
+      return createJsonResponse(
+        {
+          code: "USER_NOT_LINKED_TO_ACES",
+          message: "Seu usuario nao esta vinculado a nenhuma empresa (aces_id).",
+        },
+        403,
+      );
+    }
+
+    if (error instanceof Error && error.message === "USAGE_LIMIT_REACHED") {
+      return createJsonResponse(
+        {
+          code: "USAGE_LIMIT_REACHED",
+          message: "Seu limite mensal foi atingido. Aguarde o proximo reset para continuar.",
+        },
+        429,
+      );
+    }
+
+    if (error instanceof Error && error.message === "MODEL_PRICING_NOT_FOUND") {
+      return createJsonResponse(
+        {
+          code: "MODEL_PRICING_NOT_FOUND",
+          message: "Nao ha precificacao ativa para o modelo configurado.",
+        },
+        500,
+      );
+    }
+
+    if (error instanceof Error && error.message === "PROFILE_NOT_FOUND") {
+      return createJsonResponse(
+        {
+          code: "PROFILE_NOT_FOUND",
+          message: "Perfil de billing nao encontrado para o usuario.",
+        },
+        403,
+      );
+    }
+
     const errorMessage = error instanceof Error ? error.message : "Erro interno do servidor";
     return new Response(
       JSON.stringify({ error: errorMessage }),
@@ -726,6 +885,178 @@ async function authenticateRequestUser(req: Request, supabase: any): Promise<Aut
   };
 }
 
+function createJsonResponse(payload: Record<string, unknown>, status: number): Response {
+  return new Response(
+    JSON.stringify(payload),
+    { status, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+  );
+}
+
+function toSafeNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return 0;
+}
+
+function toSafeTokenCount(value: unknown): number {
+  return Math.max(0, Math.round(toSafeNumber(value)));
+}
+
+function emptyUsage(): TokenUsage {
+  return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+}
+
+function mergeUsage(base: TokenUsage, next: TokenUsage): TokenUsage {
+  return {
+    inputTokens: base.inputTokens + next.inputTokens,
+    outputTokens: base.outputTokens + next.outputTokens,
+    totalTokens: base.totalTokens + next.totalTokens,
+  };
+}
+
+function extractOpenAIUsage(rawUsage: any): TokenUsage {
+  const inputTokens = toSafeTokenCount(rawUsage?.prompt_tokens);
+  const outputTokens = toSafeTokenCount(rawUsage?.completion_tokens);
+  const totalTokensRaw = toSafeTokenCount(rawUsage?.total_tokens);
+  const totalTokens = totalTokensRaw > 0 ? totalTokensRaw : inputTokens + outputTokens;
+  return { inputTokens, outputTokens, totalTokens };
+}
+
+function extractGeminiUsage(rawUsage: any): TokenUsage {
+  const inputTokens = toSafeTokenCount(rawUsage?.promptTokenCount);
+  const outputTokens = toSafeTokenCount(rawUsage?.candidatesTokenCount);
+  const totalTokensRaw = toSafeTokenCount(rawUsage?.totalTokenCount);
+  const totalTokens = totalTokensRaw > 0 ? totalTokensRaw : inputTokens + outputTokens;
+  return { inputTokens, outputTokens, totalTokens };
+}
+
+function normalizeBillingUsageSnapshot(raw: any): BillingUsageSnapshot {
+  return {
+    user_id: String(raw?.user_id ?? ""),
+    aces_id: raw?.aces_id === null || raw?.aces_id === undefined ? null : toSafeNumber(raw.aces_id),
+    plan_id: String(raw?.plan_id ?? ""),
+    plan_name: String(raw?.plan_name ?? "Plano"),
+    monthly_token_limit: toSafeTokenCount(raw?.monthly_token_limit),
+    monthly_credit_limit: toSafeTokenCount(raw?.monthly_credit_limit),
+    cycle_start_at: String(raw?.cycle_start_at ?? ""),
+    cycle_end_at: String(raw?.cycle_end_at ?? ""),
+    tokens_used: toSafeTokenCount(raw?.tokens_used),
+    credits_used: toSafeNumber(raw?.credits_used),
+    usd_spent: toSafeNumber(raw?.usd_spent),
+    usage_percent: toSafeNumber(raw?.usage_percent),
+    remaining_tokens: toSafeTokenCount(raw?.remaining_tokens),
+    remaining_credits: toSafeNumber(raw?.remaining_credits),
+  };
+}
+
+function buildUsagePayload(snapshot: BillingUsageSnapshot): Record<string, unknown> {
+  return {
+    usedCredits: snapshot.credits_used,
+    limitCredits: snapshot.monthly_credit_limit,
+    percent: snapshot.usage_percent,
+    cycleEndAt: snapshot.cycle_end_at,
+  };
+}
+
+async function getBillingUsageSnapshot(
+  supabase: any,
+  userId: string,
+): Promise<BillingUsageSnapshot | null> {
+  const { data, error } = await supabase.rpc("billing_get_usage_snapshot", {
+    p_user_id: userId,
+    p_reference_at: new Date().toISOString(),
+  });
+
+  if (error) {
+    throw new Error(error.message || "Falha ao carregar snapshot de billing.");
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) {
+    return null;
+  }
+
+  return normalizeBillingUsageSnapshot(row);
+}
+
+async function hasActiveModelPricing(
+  supabase: any,
+  provider: ProviderName,
+  model: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("llm_model_pricing")
+    .select("id")
+    .eq("provider", provider)
+    .eq("model", model)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message || "Falha ao consultar precificacao do modelo.");
+  }
+
+  return Boolean(data?.id);
+}
+
+async function recordUsageEvent(
+  supabase: any,
+  params: {
+    userId: string;
+    conversationId: string | null;
+    interactionId: string;
+    provider: ProviderName;
+    model: string;
+    usage: TokenUsage;
+    metadata: Record<string, unknown>;
+  },
+): Promise<void> {
+  const { error } = await supabase.rpc("billing_record_usage", {
+    p_user_id: params.userId,
+    p_conversation_id: params.conversationId,
+    p_interaction_id: params.interactionId,
+    p_provider: params.provider,
+    p_model: params.model,
+    p_input_tokens: params.usage.inputTokens,
+    p_output_tokens: params.usage.outputTokens,
+    p_reference_at: new Date().toISOString(),
+    p_metadata: params.metadata,
+  });
+
+  if (!error) {
+    return;
+  }
+
+  const message = error.message || "BILLING_RECORD_FAILED";
+
+  if (message.includes("USER_NOT_LINKED_TO_ACES")) {
+    throw new Error("USER_NOT_LINKED_TO_ACES");
+  }
+
+  if (message.includes("USAGE_LIMIT_REACHED")) {
+    throw new Error("USAGE_LIMIT_REACHED");
+  }
+
+  if (message.includes("MODEL_PRICING_NOT_FOUND")) {
+    throw new Error("MODEL_PRICING_NOT_FOUND");
+  }
+
+  if (message.includes("PROFILE_NOT_FOUND")) {
+    throw new Error("PROFILE_NOT_FOUND");
+  }
+
+  throw new Error(`BILLING_RECORD_FAILED: ${message}`);
+}
+
 function formatMetadata(metadata: any[]): string {
   const grouped: Record<string, Record<string, string[]>> = {};
 
@@ -757,7 +1088,7 @@ async function callProvider(
   systemPrompt: string,
   messages: ChatMessage[],
   options: LLMCallOptions = {},
-): Promise<LLMResult> {
+): Promise<LLMProviderResponse> {
   if (settings.provider === "openai") {
     return await callOpenAI(settings.apiKey, settings.model, systemPrompt, messages, options);
   }
@@ -769,17 +1100,14 @@ async function tryForceToolCall(
   systemPrompt: string,
   messages: ChatMessage[],
   forceToolName: ToolName,
-): Promise<LLMResult | null> {
+): Promise<LLMProviderResponse | null> {
   try {
     const forcedResult = await callProvider(settings, systemPrompt, messages, {
       withTools: true,
       forceToolName,
       temperature: INSIGHT_TEMPERATURE,
     });
-
-    if (forcedResult.type === "tool_call_chart" || forcedResult.type === "tool_call_insight") {
-      return forcedResult;
-    }
+    return forcedResult;
   } catch (error) {
     console.warn(`Forced tool call failed for ${forceToolName}:`, error);
   }
@@ -793,7 +1121,7 @@ async function callOpenAI(
   systemPrompt: string,
   messages: ChatMessage[],
   options: LLMCallOptions = {},
-): Promise<LLMResult> {
+): Promise<LLMProviderResponse> {
   return await callOpenAIInternal(apiKey, model, systemPrompt, messages, options);
 }
 
@@ -803,7 +1131,7 @@ async function callOpenAIInternal(
   systemPrompt: string,
   messages: ChatMessage[],
   options: LLMCallOptions,
-): Promise<LLMResult> {
+): Promise<LLMProviderResponse> {
   const withTools = options.withTools ?? true;
   const forceToolName = options.forceToolName ?? null;
 
@@ -843,17 +1171,21 @@ async function callOpenAIInternal(
   }
 
   const payload = safeJsonParse(rawBody) || {};
+  const usage = extractOpenAIUsage(payload?.usage);
   const message = payload?.choices?.[0]?.message;
 
   if (withTools) {
     const toolResult = extractOpenAIToolResult(message?.tool_calls);
     if (toolResult) {
-      return toolResult;
+      return { result: toolResult, usage };
     }
   }
 
   const text = extractOpenAIText(message?.content);
-  return { type: "text", text: text || "Desculpe, nao consegui gerar uma resposta no momento." };
+  return {
+    result: { type: "text", text: text || "Desculpe, nao consegui gerar uma resposta no momento." },
+    usage,
+  };
 }
 
 async function callGemini(
@@ -862,7 +1194,7 @@ async function callGemini(
   systemPrompt: string,
   messages: ChatMessage[],
   options: LLMCallOptions = {},
-): Promise<LLMResult> {
+): Promise<LLMProviderResponse> {
   return await callGeminiInternal(apiKey, model, systemPrompt, messages, options);
 }
 
@@ -872,7 +1204,7 @@ async function callGeminiInternal(
   systemPrompt: string,
   messages: ChatMessage[],
   options: LLMCallOptions,
-): Promise<LLMResult> {
+): Promise<LLMProviderResponse> {
   const withTools = options.withTools ?? true;
   const forceToolName = options.forceToolName ?? null;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -920,16 +1252,20 @@ async function callGeminiInternal(
 
   const payload = safeJsonParse(rawBody) || {};
   const parts = payload?.candidates?.[0]?.content?.parts || [];
+  const usage = extractGeminiUsage(payload?.usageMetadata || payload?.usage_metadata);
 
   if (withTools) {
     const toolResult = extractGeminiToolResult(parts);
     if (toolResult) {
-      return toolResult;
+      return { result: toolResult, usage };
     }
   }
 
   const text = extractGeminiText(parts);
-  return { type: "text", text: text || "Desculpe, nao consegui gerar uma resposta no momento." };
+  return {
+    result: { type: "text", text: text || "Desculpe, nao consegui gerar uma resposta no momento." },
+    usage,
+  };
 }
 
 function extractOpenAIToolResult(toolCalls: any[]): LLMResult | null {
@@ -1230,7 +1566,7 @@ async function runInsightFlow(
   externalSupabase: any,
   userQuestion: string,
   insightArgs: InsightToolArgs,
-): Promise<InsightContentPayload> {
+): Promise<{ payload: InsightContentPayload; usage: TokenUsage }> {
   const queryData = await executeInsightQuery(externalSupabase, insightArgs.sql_query);
   const rows = queryData.slice(0, MAX_INSIGHT_ROWS);
   const truncated = queryData.length > MAX_INSIGHT_ROWS;
@@ -1238,16 +1574,19 @@ async function runInsightFlow(
     console.log(`Insight rows truncated from ${queryData.length} to ${MAX_INSIGHT_ROWS}.`);
   }
 
-  const insightText = await synthesizeInsightText(settings, userQuestion, insightArgs, queryData);
+  const insightSynthesis = await synthesizeInsightText(settings, userQuestion, insightArgs, queryData);
 
   return {
-    success: true,
-    analysis_scope: insightArgs.analysis_scope,
-    analysis_focus: insightArgs.analysis_focus,
-    row_count: queryData.length,
-    columns: inferColumns(rows),
-    rows,
-    insight_text: insightText,
+    payload: {
+      success: true,
+      analysis_scope: insightArgs.analysis_scope,
+      analysis_focus: insightArgs.analysis_focus,
+      row_count: queryData.length,
+      columns: inferColumns(rows),
+      rows,
+      insight_text: insightSynthesis.text,
+    },
+    usage: insightSynthesis.usage,
   };
 }
 
@@ -1256,7 +1595,7 @@ async function synthesizeInsightText(
   userQuestion: string,
   insightArgs: InsightToolArgs,
   queryData: Record<string, unknown>[],
-): Promise<string> {
+): Promise<{ text: string; usage: TokenUsage }> {
   const limitedRows = queryData.slice(0, MAX_INSIGHT_ROWS);
   const truncated = queryData.length > MAX_INSIGHT_ROWS;
 
@@ -1281,7 +1620,7 @@ async function synthesizeInsightText(
     },
   ];
 
-  const synthesisResult = await callProvider(
+  const synthesisResponse = await callProvider(
     settings,
     synthesisSystemPrompt,
     synthesisMessages,
@@ -1291,26 +1630,35 @@ async function synthesizeInsightText(
     },
   );
 
-  if (synthesisResult.type !== "text") {
+  if (synthesisResponse.result.type !== "text") {
     throw new Error("A sintese de insight retornou formato inesperado.");
   }
 
-  const cleaned = sanitizeInsightNarrative(synthesisResult.text);
+  const cleaned = sanitizeInsightNarrative(synthesisResponse.result.text);
   if (cleaned) {
-    return ensureInsightClosingBlock(cleaned, insightArgs.analysis_focus);
+    return {
+      text: ensureInsightClosingBlock(cleaned, insightArgs.analysis_focus),
+      usage: synthesisResponse.usage,
+    };
   }
 
   if (queryData.length === 0) {
-    return ensureInsightClosingBlock(
-      "Nao encontrei registros para essa analise no periodo informado. Posso revisar os filtros e tentar outra abordagem.",
-      insightArgs.analysis_focus,
-    );
+    return {
+      text: ensureInsightClosingBlock(
+        "Nao encontrei registros para essa analise no periodo informado. Posso revisar os filtros e tentar outra abordagem.",
+        insightArgs.analysis_focus,
+      ),
+      usage: synthesisResponse.usage,
+    };
   }
 
-  return ensureInsightClosingBlock(
-    "Nao foi possivel concluir a sintese analitica no momento, mas os dados foram processados com sucesso.",
-    insightArgs.analysis_focus,
-  );
+  return {
+    text: ensureInsightClosingBlock(
+      "Nao foi possivel concluir a sintese analitica no momento, mas os dados foram processados com sucesso.",
+      insightArgs.analysis_focus,
+    ),
+    usage: synthesisResponse.usage,
+  };
 }
 
 function buildInsightSynthesisPrompt(scope: InsightScope): string {

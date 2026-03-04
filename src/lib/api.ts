@@ -1,5 +1,16 @@
 import { supabase } from "@/integrations/supabase/client";
-import { Message, Conversation, LLMSettings, DatabaseMetadata, Agent, AgentTable } from "@/types/database";
+import {
+  Message,
+  Conversation,
+  LLMSettings,
+  DatabaseMetadata,
+  Agent,
+  AgentTable,
+  UserProfile,
+  UsageSummary,
+} from "@/types/database";
+
+const PROFILE_AVATAR_BUCKET = "profile-avatars";
 
 function getSupabasePublicKey(): string {
   const key =
@@ -29,6 +40,39 @@ async function getAuthenticatedFunctionHeaders(): Promise<Record<string, string>
     apikey: supabaseKey,
     Authorization: `Bearer ${accessToken}`,
   };
+}
+
+function toSafeNumber(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeUsageSummary(raw: any): UsageSummary {
+  return {
+    user_id: String(raw?.user_id || ""),
+    aces_id: raw?.aces_id === null || raw?.aces_id === undefined ? null : toSafeNumber(raw.aces_id),
+    plan_id: String(raw?.plan_id || ""),
+    plan_name: String(raw?.plan_name || "Plano"),
+    monthly_token_limit: toSafeNumber(raw?.monthly_token_limit),
+    monthly_credit_limit: toSafeNumber(raw?.monthly_credit_limit),
+    cycle_start_at: String(raw?.cycle_start_at || ""),
+    cycle_end_at: String(raw?.cycle_end_at || ""),
+    tokens_used: toSafeNumber(raw?.tokens_used),
+    credits_used: toSafeNumber(raw?.credits_used),
+    usd_spent: toSafeNumber(raw?.usd_spent),
+    usage_percent: toSafeNumber(raw?.usage_percent),
+    remaining_tokens: toSafeNumber(raw?.remaining_tokens),
+    remaining_credits: toSafeNumber(raw?.remaining_credits),
+  };
+}
+
+async function getCurrentUserId(): Promise<string> {
+  const { data, error } = await supabase.auth.getUser();
+  if (error) throw error;
+  if (!data.user) {
+    throw new Error("Sessao expirada. Faca login novamente.");
+  }
+  return data.user.id;
 }
 
 export async function getConversations(): Promise<Conversation[]> {
@@ -201,6 +245,127 @@ export async function sendChatMessage(
     headers,
     body: JSON.stringify({ messages, conversationId, agentId }),
   });
+}
+
+export async function getMyProfile(): Promise<UserProfile> {
+  const userId = await getCurrentUserId();
+  const client = supabase as any;
+
+  const { data, error } = await client
+    .from("user_profiles")
+    .select("*, plan:billing_plans(*)")
+    .eq("user_id", userId)
+    .single();
+
+  if (error) throw error;
+  return data as UserProfile;
+}
+
+export async function updateMyProfile(payload: {
+  display_name?: string | null;
+  username?: string | null;
+  avatar_path?: string | null;
+  avatar_url?: string | null;
+}): Promise<UserProfile> {
+  const userId = await getCurrentUserId();
+  const updates: Record<string, unknown> = {};
+
+  if ("display_name" in payload) {
+    const value = payload.display_name?.trim() ?? null;
+    updates.display_name = value && value.length > 0 ? value : null;
+  }
+
+  if ("username" in payload) {
+    const rawUsername = payload.username?.trim().toLowerCase() ?? null;
+    if (rawUsername && !/^[a-z0-9_]{3,30}$/.test(rawUsername)) {
+      throw new Error("Nome de usuario invalido. Use 3-30 caracteres: letras, numeros e _.");
+    }
+    updates.username = rawUsername && rawUsername.length > 0 ? rawUsername : null;
+  }
+
+  if ("avatar_path" in payload) {
+    updates.avatar_path = payload.avatar_path ?? null;
+  }
+
+  if ("avatar_url" in payload) {
+    updates.avatar_url = payload.avatar_url ?? null;
+  }
+
+  const client = supabase as any;
+  const { data, error } = await client
+    .from("user_profiles")
+    .update(updates)
+    .eq("user_id", userId)
+    .select("*, plan:billing_plans(*)")
+    .single();
+
+  if (error) throw error;
+  return data as UserProfile;
+}
+
+export async function uploadProfileAvatar(file: File): Promise<UserProfile> {
+  const userId = await getCurrentUserId();
+  const extension = file.name.includes(".") ? file.name.split(".").pop() : "png";
+  const safeExtension = extension && /^[a-zA-Z0-9]+$/.test(extension) ? extension : "png";
+  const filePath = `${userId}/avatar-${Date.now()}.${safeExtension}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(PROFILE_AVATAR_BUCKET)
+    .upload(filePath, file, {
+      cacheControl: "3600",
+      upsert: false,
+    });
+
+  if (uploadError) throw uploadError;
+
+  const { data: publicUrlData } = supabase.storage
+    .from(PROFILE_AVATAR_BUCKET)
+    .getPublicUrl(filePath);
+
+  return updateMyProfile({
+    avatar_path: filePath,
+    avatar_url: publicUrlData.publicUrl || null,
+  });
+}
+
+export async function getMyUsageSummary(): Promise<UsageSummary> {
+  const client = supabase as any;
+  const { data, error } = await client.rpc("billing_get_my_usage_summary");
+  if (error) throw error;
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) {
+    throw new Error("Nao foi possivel carregar o uso mensal.");
+  }
+
+  return normalizeUsageSummary(row);
+}
+
+export async function getBillingPlans(): Promise<{
+  id: string;
+  code: string;
+  name: string;
+  monthly_token_limit: number;
+  monthly_credit_limit: number;
+  is_active: boolean;
+}[]> {
+  const client = supabase as any;
+  const { data, error } = await client
+    .from("billing_plans")
+    .select("id, code, name, monthly_token_limit, monthly_credit_limit, is_active")
+    .eq("is_active", true)
+    .order("created_at", { ascending: true });
+
+  if (error) throw error;
+
+  return (data || []).map((plan: any) => ({
+    id: String(plan.id),
+    code: String(plan.code),
+    name: String(plan.name),
+    monthly_token_limit: toSafeNumber(plan.monthly_token_limit),
+    monthly_credit_limit: toSafeNumber(plan.monthly_credit_limit),
+    is_active: Boolean(plan.is_active),
+  }));
 }
 
 export async function testExternalConnection(): Promise<{
