@@ -513,21 +513,29 @@ serve(async (req) => {
       responseToReturn = createTextSseResponse(finalText);
     }
 
-    if (totalUsage.totalTokens > 0) {
-      await recordUsageEvent(supabase, {
-        userId: authenticatedUser.id,
-        conversationId,
-        interactionId,
-        provider: activeSettings.provider,
-        model: activeSettings.model,
-        usage: totalUsage,
-        metadata: {
-          user_intent: userIntent,
-          chart_and_insight_requested: chartAndInsightRequested,
-          agent_id: agentId,
-        },
-      });
-    }
+    const usageMissing = totalUsage.totalTokens <= 0;
+    console.log("[billing] Final aggregated usage before record:", {
+      interactionId,
+      provider: activeSettings.provider,
+      model: activeSettings.model,
+      usage: totalUsage,
+      usage_missing: usageMissing,
+    });
+
+    await recordUsageEvent(supabase, {
+      userId: authenticatedUser.id,
+      conversationId,
+      interactionId,
+      provider: activeSettings.provider,
+      model: activeSettings.model,
+      usage: totalUsage,
+      metadata: {
+        user_intent: userIntent,
+        chart_and_insight_requested: chartAndInsightRequested,
+        agent_id: agentId,
+        usage_missing: usageMissing,
+      },
+    });
 
     return responseToReturn;
   } catch (error) {
@@ -932,9 +940,26 @@ function extractOpenAIUsage(rawUsage: any): TokenUsage {
 }
 
 function extractGeminiUsage(rawUsage: any): TokenUsage {
-  const inputTokens = toSafeTokenCount(rawUsage?.promptTokenCount);
-  const outputTokens = toSafeTokenCount(rawUsage?.candidatesTokenCount);
-  const totalTokensRaw = toSafeTokenCount(rawUsage?.totalTokenCount);
+  const inputTokens = toSafeTokenCount(
+    rawUsage?.promptTokenCount ??
+      rawUsage?.prompt_token_count ??
+      rawUsage?.promptTokens ??
+      rawUsage?.inputTokenCount ??
+      rawUsage?.input_tokens,
+  );
+  const outputTokens = toSafeTokenCount(
+    rawUsage?.candidatesTokenCount ??
+      rawUsage?.candidates_token_count ??
+      rawUsage?.candidatesTokens ??
+      rawUsage?.outputTokenCount ??
+      rawUsage?.output_tokens,
+  );
+  const totalTokensRaw = toSafeTokenCount(
+    rawUsage?.totalTokenCount ??
+      rawUsage?.total_token_count ??
+      rawUsage?.totalTokens ??
+      rawUsage?.tokenCount,
+  );
   const totalTokens = totalTokensRaw > 0 ? totalTokensRaw : inputTokens + outputTokens;
   return { inputTokens, outputTokens, totalTokens };
 }
@@ -1252,7 +1277,15 @@ async function callGeminiInternal(
 
   const payload = safeJsonParse(rawBody) || {};
   const parts = payload?.candidates?.[0]?.content?.parts || [];
-  const usage = extractGeminiUsage(payload?.usageMetadata || payload?.usage_metadata);
+  const rawGeminiUsage =
+    payload?.usageMetadata ||
+    payload?.usage_metadata ||
+    payload?.usage ||
+    payload?.metadata?.usage ||
+    null;
+  const usage = extractGeminiUsage(rawGeminiUsage);
+  console.log("[billing] Gemini raw usage metadata:", rawGeminiUsage);
+  console.log("[billing] Gemini parsed usage:", usage);
 
   if (withTools) {
     const toolResult = extractGeminiToolResult(parts);
