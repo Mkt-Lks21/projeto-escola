@@ -11,6 +11,18 @@ import {
 } from "@/lib/api";
 import { toast } from "sonner";
 
+type ChatUsageError = {
+  code?: string;
+  message?: string;
+  error?: string;
+  usage?: {
+    usedCredits?: number;
+    limitCredits?: number;
+    percent?: number;
+    cycleEndAt?: string;
+  };
+};
+
 const CURRENT_CONVERSATION_STORAGE_KEY = "currentConversationId";
 
 export function useChat(agentId?: string, initialConversationId?: string) {
@@ -131,8 +143,20 @@ export function useChat(agentId?: string, initialConversationId?: string) {
       const response = await sendChatMessage(apiMessages, conversationId, agentId);
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Erro ao enviar mensagem");
+        const error: ChatUsageError = await response.json().catch(() => ({}));
+
+        if (error.code === "USAGE_LIMIT_REACHED") {
+          const percentage = typeof error.usage?.percent === "number"
+            ? `${error.usage.percent.toFixed(2)}%`
+            : "100%";
+          throw new Error(error.message || `Seu limite mensal foi atingido (${percentage}).`);
+        }
+
+        if (error.code === "USER_NOT_LINKED_TO_ACES") {
+          throw new Error(error.message || "Seu usuario nao esta vinculado a uma empresa.");
+        }
+
+        throw new Error(error.error || error.message || "Erro ao enviar mensagem");
       }
 
       const reader = response.body?.getReader();
@@ -175,6 +199,8 @@ export function useChat(agentId?: string, initialConversationId?: string) {
         );
         setMessages((prev) => [...prev, assistantMessage]);
       }
+
+      window.dispatchEvent(new CustomEvent("billing-usage-updated"));
     } catch (error) {
       console.error("Chat error:", error);
       toast.error(error instanceof Error ? error.message : "Erro ao enviar mensagem");
