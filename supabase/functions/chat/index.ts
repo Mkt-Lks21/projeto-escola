@@ -681,7 +681,8 @@ USO OBRIGATORIO DA TOOL generate_insight:
 
 REGRA DE OURO:
 - Nunca exponha SQL ao usuario final em respostas comuns
-- Nunca retorne [AUTO_EXECUTE] fora do modo SQL explicito`;
+- Nunca retorne [AUTO_EXECUTE] fora do modo SQL explicito
+- Para saudacoes (como "ola", "boa tarde"), bate-papo basico ou perguntas isoladas que NAO precisem de consultas ao banco de dados, responda naturalmente em texto e NAO use a tool generate_chart nem generate_insight.`;
 
   let output = baseInstructions;
 
@@ -942,23 +943,23 @@ function extractOpenAIUsage(rawUsage: any): TokenUsage {
 function extractGeminiUsage(rawUsage: any): TokenUsage {
   const inputTokens = toSafeTokenCount(
     rawUsage?.promptTokenCount ??
-      rawUsage?.prompt_token_count ??
-      rawUsage?.promptTokens ??
-      rawUsage?.inputTokenCount ??
-      rawUsage?.input_tokens,
+    rawUsage?.prompt_token_count ??
+    rawUsage?.promptTokens ??
+    rawUsage?.inputTokenCount ??
+    rawUsage?.input_tokens,
   );
   const outputTokens = toSafeTokenCount(
     rawUsage?.candidatesTokenCount ??
-      rawUsage?.candidates_token_count ??
-      rawUsage?.candidatesTokens ??
-      rawUsage?.outputTokenCount ??
-      rawUsage?.output_tokens,
+    rawUsage?.candidates_token_count ??
+    rawUsage?.candidatesTokens ??
+    rawUsage?.outputTokenCount ??
+    rawUsage?.output_tokens,
   );
   const totalTokensRaw = toSafeTokenCount(
     rawUsage?.totalTokenCount ??
-      rawUsage?.total_token_count ??
-      rawUsage?.totalTokens ??
-      rawUsage?.tokenCount,
+    rawUsage?.total_token_count ??
+    rawUsage?.totalTokens ??
+    rawUsage?.tokenCount,
   );
   const totalTokens = totalTokensRaw > 0 ? totalTokensRaw : inputTokens + outputTokens;
   return { inputTokens, outputTokens, totalTokens };
@@ -1252,11 +1253,11 @@ async function callGeminiInternal(
     requestBody.tools = GEMINI_TOOLS;
     requestBody.toolConfig = forceToolName
       ? {
-          functionCallingConfig: {
-            mode: "ANY",
-            allowedFunctionNames: [forceToolName],
-          },
-        }
+        functionCallingConfig: {
+          mode: "ANY",
+          allowedFunctionNames: [forceToolName],
+        },
+      }
       : { functionCallingConfig: { mode: "AUTO" } };
   }
 

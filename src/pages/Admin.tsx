@@ -1,30 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
 import { testExternalConnection } from "@/lib/api";
-import { useLLMSettings } from "@/hooks/useLLMSettings";
 import { useMetadata } from "@/hooks/useMetadata";
-import { OPENAI_MODELS, GOOGLE_MODELS } from "@/types/database";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  Form,
-  FormControl,
-  FormDescription,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Card,
   CardContent,
@@ -34,66 +12,17 @@ import {
 } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { RefreshCw, Save, Database, Key, Plug, CheckCircle2, XCircle, ArrowLeft } from "lucide-react";
+import { RefreshCw, Database, Plug, CheckCircle2, XCircle, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 
-const formSchema = z.object({
-  provider: z.enum(["openai", "gemini"]),
-  model: z.string().min(1, "Selecione um modelo"),
-  api_key: z.string().min(1, "API Key é obrigatória"),
-});
-
-type FormValues = z.infer<typeof formSchema>;
 
 export default function Admin() {
   const navigate = useNavigate();
-  const { settings, isLoading: settingsLoading, saveSettings, isSaving } = useLLMSettings();
   const { metadata, isLoading: metadataLoading, refresh, isRefreshing, groupedMetadata, refreshExternal, externalMetadata, externalGroupedMetadata } = useMetadata();
-  
+
   const [connectionStatus, setConnectionStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [connectionMessage, setConnectionMessage] = useState("");
   const [isLoadingExternal, setIsLoadingExternal] = useState(false);
-
-  const form = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
-    defaultValues: {
-      provider: "openai",
-      model: "",
-      api_key: "",
-    },
-  });
-
-  const selectedProvider = form.watch("provider");
-
-  useEffect(() => {
-    if (settings) {
-      const normalizedProvider =
-        typeof settings.provider === "string" &&
-        settings.provider.toLowerCase() === "google"
-          ? "gemini"
-          : settings.provider;
-      form.setValue("provider", normalizedProvider as "openai" | "gemini");
-      form.setValue("model", settings.model);
-      form.setValue("api_key", settings.api_key);
-    }
-  }, [settings, form]);
-
-  useEffect(() => {
-    form.setValue("model", "");
-  }, [selectedProvider, form]);
-
-  const onSubmit = async (values: FormValues) => {
-    try {
-      await saveSettings({
-        provider: values.provider,
-        model: values.model,
-        api_key: values.api_key,
-      });
-      toast.success("Configurações salvas com sucesso!");
-    } catch (error) {
-      toast.error("Erro ao salvar configurações");
-    }
-  };
 
   const handleRefreshMetadata = async () => {
     try {
@@ -139,8 +68,6 @@ export default function Admin() {
     }
   };
 
-  const models = selectedProvider === "openai" ? OPENAI_MODELS : GOOGLE_MODELS;
-
   return (
     <div className="flex-1 p-6 overflow-y-auto relative z-10">
       <div className="max-w-4xl mx-auto space-y-6">
@@ -156,17 +83,13 @@ export default function Admin() {
           <div>
             <h1 className="text-2xl font-bold">Configurações</h1>
             <p className="text-muted-foreground">
-              Configure o provedor de LLM e gerencie os metadados do banco de dados.
+              Gerencie os metadados do banco de dados supabase externo.
             </p>
           </div>
         </div>
 
-        <Tabs defaultValue="llm" className="space-y-4">
+        <Tabs defaultValue="external" className="space-y-4">
           <TabsList className="glass-subtle rounded-2xl p-1">
-            <TabsTrigger value="llm" className="gap-2">
-              <Key className="w-4 h-4" />
-              LLM
-            </TabsTrigger>
             <TabsTrigger value="external" className="gap-2">
               <Plug className="w-4 h-4" />
               Banco Externo
@@ -176,95 +99,6 @@ export default function Admin() {
               Metadados
             </TabsTrigger>
           </TabsList>
-
-          <TabsContent value="llm">
-            <Card>
-              <CardHeader>
-                <CardTitle>Configuração do LLM</CardTitle>
-                <CardDescription>
-                  Configure as credenciais do provedor de linguagem.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Form {...form}>
-                  <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                    <FormField
-                      control={form.control}
-                      name="provider"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Provedor</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger>
-                                <SelectValue placeholder="Selecione o provedor" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="openai">OpenAI</SelectItem>
-                              <SelectItem value="gemini">Google (Gemini)</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={form.control}
-                      name="model"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Modelo</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger>
-                                <SelectValue placeholder="Selecione o modelo" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {models.map((model) => (
-                                <SelectItem key={model} value={model}>
-                                  {model}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={form.control}
-                      name="api_key"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>API Key</FormLabel>
-                          <FormControl>
-                            <Input
-                              type="password"
-                              placeholder="sk-..."
-                              {...field}
-                            />
-                          </FormControl>
-                          <FormDescription>
-                            Sua chave de API do provedor selecionado.
-                          </FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <Button type="submit" disabled={isSaving}>
-                      <Save className="w-4 h-4 mr-2" />
-                      {isSaving ? "Salvando..." : "Salvar"}
-                    </Button>
-                  </form>
-                </Form>
-              </CardContent>
-            </Card>
-          </TabsContent>
 
           <TabsContent value="external">
             <Card>
@@ -280,8 +114,8 @@ export default function Admin() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center gap-4">
-                  <Button 
-                    variant="outline" 
+                  <Button
+                    variant="outline"
                     onClick={handleTestConnection}
                     disabled={connectionStatus === "testing"}
                   >
