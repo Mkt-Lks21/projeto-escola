@@ -35,6 +35,8 @@ interface AppSidebarProps {
   onDeleteConversation: (id: string) => void;
   onNewConversation: () => void;
   agentId?: string;
+  isOpen?: boolean;
+  onClose?: () => void;
 }
 
 function formatInteger(value: number): string {
@@ -64,6 +66,8 @@ export default function AppSidebar({
   onDeleteConversation,
   onNewConversation,
   agentId,
+  isOpen = false,
+  onClose,
 }: AppSidebarProps) {
   const location = useLocation();
   const { user, signOut } = useAuth();
@@ -231,8 +235,8 @@ export default function AppSidebar({
     }
   };
 
-  return (
-    <aside className="w-64 flex flex-col h-[calc(100vh-2rem)] glass-panel rounded-2xl overflow-hidden relative z-20">
+  const sidebarContent = (
+    <aside className="w-64 flex flex-col h-full glass-panel md:rounded-2xl overflow-hidden relative z-20 bg-background">
       <div className="p-4 border-b border-white/40 space-y-1">
         <Link to="/" className="flex items-center gap-2">
           <img src="/logo-arquem.svg" alt="Arquem" className="w-6 h-6 object-contain" />
@@ -465,5 +469,27 @@ export default function AppSidebar({
         onChange={(event) => void handleAvatarChange(event)}
       />
     </aside>
+  );
+
+  return (
+    <>
+      {/* Desktop: sidebar fixa */}
+      <div className="hidden md:flex h-[calc(100vh-2rem)]">
+        {sidebarContent}
+      </div>
+
+      {/* Mobile: drawer overlay */}
+      {isOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={onClose}
+          />
+          <div className="relative h-full w-72 max-w-[85vw] animate-in slide-in-from-left duration-200">
+            {sidebarContent}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
