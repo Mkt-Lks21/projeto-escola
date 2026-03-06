@@ -9,6 +9,7 @@ export interface AuthContextValue {
   isAuthLoading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string) => Promise<{ requiresEmailConfirmation: boolean }>;
+  resetPassword: (email: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -62,12 +63,25 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, []);
 
   const signUp = useCallback(async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signUp({ email, password });
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        emailRedirectTo: `${window.location.origin}/`,
+      }
+    });
     if (error) throw error;
 
     return {
       requiresEmailConfirmation: !data.session,
     };
+  }, []);
+
+  const resetPassword = useCallback(async (email: string) => {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/`,
+    });
+    if (error) throw error;
   }, []);
 
   const signOut = useCallback(async () => {
@@ -84,9 +98,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
       isAuthLoading,
       signIn,
       signUp,
+      resetPassword,
       signOut,
     }),
-    [isAuthLoading, session, signIn, signOut, signUp, user],
+    [isAuthLoading, session, signIn, signOut, signUp, resetPassword, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
