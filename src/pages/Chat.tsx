@@ -6,12 +6,14 @@ import ChatInput from "@/components/chat/ChatInput";
 import { executeQuery, getAgentTables } from "@/lib/api";
 import { useParams, useSearchParams } from "react-router-dom";
 import { AgentTable } from "@/types/database";
+import MobileHeader from "@/components/layout/MobileHeader";
 
 export default function Chat() {
   const { agentId } = useParams<{ agentId?: string }>();
   const [searchParams] = useSearchParams();
   const initialConversationId = searchParams.get("c") || undefined;
   const [agentTables, setAgentTables] = useState<AgentTable[]>([]);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const {
     conversations,
     currentConversationId,
@@ -82,7 +84,11 @@ export default function Chat() {
   }, [agentTables]);
 
   return (
-    <div className="flex h-screen bg-background p-4 gap-4 relative z-10">
+    <div className="flex flex-col md:flex-row h-screen bg-background p-0 md:p-4 md:gap-4 relative z-10">
+      <MobileHeader
+        onOpenSidebar={() => setIsSidebarOpen(true)}
+        onNewConversation={createNewConversation}
+      />
       <AppSidebar
         conversations={conversations}
         currentConversationId={currentConversationId}
@@ -90,9 +96,11 @@ export default function Chat() {
         onDeleteConversation={deleteConversation}
         onNewConversation={createNewConversation}
         agentId={agentId}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
       />
 
-      <main className="flex-1 flex flex-col glass-panel rounded-2xl overflow-hidden relative z-10">
+      <main className="flex-1 flex flex-col glass-panel md:rounded-2xl overflow-hidden relative z-10">
         <ChatMessages
           messages={messages}
           isLoading={isLoading}

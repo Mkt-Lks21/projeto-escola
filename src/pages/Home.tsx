@@ -1,9 +1,11 @@
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Database, MessageSquare, Bot, Settings } from "lucide-react";
 import { useAgents } from "@/hooks/useAgents";
 import { useChat } from "@/hooks/useChat";
 import AgentCard from "@/components/home/AgentCard";
 import AppSidebar from "@/components/sidebar/AppSidebar";
+import MobileHeader from "@/components/layout/MobileHeader";
 
 export default function Home() {
   const navigate = useNavigate();
@@ -15,6 +17,8 @@ export default function Home() {
     deleteConversation,
     createNewConversation,
   } = useChat();
+
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const handleSelectConversation = (id: string) => {
     selectConversation(id);
@@ -31,17 +35,23 @@ export default function Home() {
   };
 
   return (
-    <div className="flex h-screen bg-background p-4 gap-4 relative z-10">
+    <div className="flex flex-col md:flex-row h-screen bg-background p-0 md:p-4 md:gap-4 relative z-10">
+      <MobileHeader
+        onOpenSidebar={() => setIsSidebarOpen(true)}
+        onNewConversation={handleNewConversation}
+      />
       <AppSidebar
         conversations={conversations}
         currentConversationId={currentConversationId}
         onSelectConversation={handleSelectConversation}
         onDeleteConversation={deleteConversation}
         onNewConversation={handleNewConversation}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
       />
 
-      <main className="flex-1 flex flex-col glass-panel rounded-2xl overflow-auto relative z-10">
-        <header className="mx-4 mt-4 flex items-center justify-between px-6 py-4 rounded-2xl glass-panel">
+      <main className="flex-1 flex flex-col glass-panel md:rounded-2xl overflow-auto relative z-10">
+        <header className="hidden md:flex mx-4 mt-4 items-center justify-between px-6 py-4 rounded-2xl glass-panel">
           <div className="flex items-center gap-2">
             <Database className="w-6 h-6 text-primary" />
             <span className="font-semibold text-lg">Arquem Analyst</span>
@@ -55,7 +65,7 @@ export default function Home() {
           </Link>
         </header>
 
-        <div className="flex-1 flex flex-col items-center px-6 py-12">
+        <div className="flex-1 flex flex-col items-center px-4 md:px-6 py-8 md:py-12">
           <h1 className="text-3xl font-bold mb-2">Bem-vindo ao Arquem Analyst</h1>
           <p className="text-muted-foreground mb-10">
             Converse com seus dados ou crie agentes especialistas.
