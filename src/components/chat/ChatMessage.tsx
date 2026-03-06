@@ -118,7 +118,7 @@ export default function ChatMessage({
   return (
     <div
       className={cn(
-        "flex gap-3 p-4 rounded-2xl glass-card",
+        "flex gap-3 p-3 md:p-4 rounded-2xl glass-card",
         isUser ? "glass-card-strong" : "glass-subtle",
       )}
     >
@@ -139,7 +139,7 @@ export default function ChatMessage({
         ) : isInsightContent ? (
           <InsightResultPanel payload={insightPayload} />
         ) : isChartContent ? (
-          <div className="space-y-3">
+          <div className="space-y-4">
             {!chartPayload ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -153,12 +153,13 @@ export default function ChatMessage({
                 </p>
               </div>
             ) : (
-              <div className="rounded-2xl glass-card overflow-x-auto p-2">
+              <div className="rounded-2xl glass-card overflow-x-auto p-2" style={{ minHeight: "280px" }}>
                 <Plot
                   data={plotData}
                   layout={{
                     autosize: true,
                     ...plotLayout,
+                    margin: { t: 40, r: 20, b: 40, l: 50, ...(plotLayout.margin as Record<string, number> || {}) },
                   }}
                   config={{
                     responsive: true,
