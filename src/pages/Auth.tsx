@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Database, LogIn, UserPlus } from "lucide-react";
+import { Database, LogIn, UserPlus, Eye, EyeOff } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -31,6 +31,11 @@ const signUpSchema = z
 type SignInFormValues = z.infer<typeof signInSchema>;
 type SignUpFormValues = z.infer<typeof signUpSchema>;
 
+const recoverSchema = z.object({
+  email: z.string().email("Informe um email valido."),
+});
+type RecoverFormValues = z.infer<typeof recoverSchema>;
+
 function resolveNextPath(search: string): string {
   const params = new URLSearchParams(search);
   const next = params.get("next");
@@ -45,10 +50,30 @@ export default function Auth() {
   const navigate = useNavigate();
   const location = useLocation();
   const nextPath = resolveNextPath(location.search);
-  const { signIn, signUp } = useAuth();
-  const [activeTab, setActiveTab] = useState<"signin" | "signup">("signin");
+  const { signIn, signUp, resetPassword } = useAuth();
+  const [activeTab, setActiveTab] = useState<"signin" | "signup" | "recover">("signin");
+  const [showPassword, setShowPassword] = useState(false);
   const [isSubmittingSignIn, setIsSubmittingSignIn] = useState(false);
   const [isSubmittingSignUp, setIsSubmittingSignUp] = useState(false);
+  const [isSubmittingRecover, setIsSubmittingRecover] = useState(false);
+
+  const recoverForm = useForm<RecoverFormValues>({
+    resolver: zodResolver(recoverSchema),
+    defaultValues: { email: "" },
+  });
+
+  const handleRecover = async (values: RecoverFormValues) => {
+    setIsSubmittingRecover(true);
+    try {
+      await resetPassword(values.email);
+      toast.success("Se o email estiver cadastrado, um link de recuperação foi enviado.");
+      setActiveTab("signin");
+    } catch (error) {
+      toast.error("Erro ao solicitar recuperação de senha.");
+    } finally {
+      setIsSubmittingRecover(false);
+    }
+  };
 
   const signInForm = useForm<SignInFormValues>({
     resolver: zodResolver(signInSchema),
@@ -105,12 +130,8 @@ export default function Auth() {
   return (
     <div className="min-h-screen bg-background relative z-10 flex items-center justify-center px-4 py-8">
       <div className="w-full max-w-md space-y-4">
-        <div className="glass-panel rounded-2xl p-4 flex items-center gap-3">
-          <Database className="w-5 h-5 text-primary" />
-          <div>
-            <h1 className="text-lg font-semibold">Arquem Analyst</h1>
-            <p className="text-xs text-muted-foreground">Acesse sua conta para continuar</p>
-          </div>
+        <div className="flex justify-center mb-4">
+          <img src="/logo-arquem.svg" alt="Arquem Logo" className="h-[100px] object-contain flex-shrink-0" />
         </div>
 
         <Card className="glass-card border-white/45">
@@ -119,11 +140,13 @@ export default function Auth() {
             <CardDescription>Entre na sua conta ou crie um novo usuario.</CardDescription>
           </CardHeader>
           <CardContent>
-            <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "signin" | "signup")}>
-              <TabsList className="grid grid-cols-2 w-full glass-subtle">
-                <TabsTrigger value="signin">Entrar</TabsTrigger>
-                <TabsTrigger value="signup">Criar conta</TabsTrigger>
-              </TabsList>
+            <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "signin" | "signup" | "recover")}>
+              {activeTab !== "recover" && (
+                <TabsList className="grid grid-cols-2 w-full glass-subtle">
+                  <TabsTrigger value="signin">Entrar</TabsTrigger>
+                  <TabsTrigger value="signup">Criar conta</TabsTrigger>
+                </TabsList>
+              )}
 
               <TabsContent value="signin" className="mt-4">
                 <Form {...signInForm}>
@@ -149,7 +172,23 @@ export default function Auth() {
                         <FormItem>
                           <FormLabel>Senha</FormLabel>
                           <FormControl>
-                            <Input type="password" autoComplete="current-password" placeholder="******" {...field} />
+                            <div className="flex flex-col">
+                              <div className="relative">
+                                <Input type={showPassword ? "text" : "password"} autoComplete="current-password" placeholder="******" {...field} />
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
+                                  onClick={() => setShowPassword(!showPassword)}
+                                >
+                                  {showPassword ? <EyeOff className="h-4 w-4 text-muted-foreground" /> : <Eye className="h-4 w-4 text-muted-foreground" />}
+                                </Button>
+                              </div>
+                              <Button type="button" variant="link" className="p-0 h-auto text-xs font-normal text-muted-foreground hover:text-primary self-start mt-2" onClick={() => setActiveTab("recover")}>
+                                Esqueceu a senha?
+                              </Button>
+                            </div>
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -188,7 +227,18 @@ export default function Auth() {
                         <FormItem>
                           <FormLabel>Senha</FormLabel>
                           <FormControl>
-                            <Input type="password" autoComplete="new-password" placeholder="******" {...field} />
+                            <div className="relative">
+                              <Input type={showPassword ? "text" : "password"} autoComplete="new-password" placeholder="******" {...field} />
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
+                                onClick={() => setShowPassword(!showPassword)}
+                              >
+                                {showPassword ? <EyeOff className="h-4 w-4 text-muted-foreground" /> : <Eye className="h-4 w-4 text-muted-foreground" />}
+                              </Button>
+                            </div>
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -202,7 +252,9 @@ export default function Auth() {
                         <FormItem>
                           <FormLabel>Confirmar senha</FormLabel>
                           <FormControl>
-                            <Input type="password" autoComplete="new-password" placeholder="******" {...field} />
+                            <div className="relative">
+                              <Input type={showPassword ? "text" : "password"} autoComplete="new-password" placeholder="******" {...field} />
+                            </div>
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -216,15 +268,41 @@ export default function Auth() {
                   </form>
                 </Form>
               </TabsContent>
+
+              <TabsContent value="recover" className="mt-4">
+                <div className="mb-4 text-center">
+                  <h3 className="text-lg font-medium">Recuperar senha</h3>
+                  <p className="text-sm text-muted-foreground">Enviaremos um link para redefinir sua senha.</p>
+                </div>
+                <Form {...recoverForm}>
+                  <form className="space-y-4" onSubmit={recoverForm.handleSubmit(handleRecover)}>
+                    <FormField
+                      control={recoverForm.control}
+                      name="email"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Email</FormLabel>
+                          <FormControl>
+                            <Input type="email" autoComplete="email" placeholder="voce@empresa.com" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <div className="flex flex-col gap-2 pt-2">
+                      <Button type="submit" className="w-full" disabled={isSubmittingRecover}>
+                        {isSubmittingRecover ? "Enviando..." : "Enviar link"}
+                      </Button>
+                      <Button type="button" variant="ghost" className="w-full" onClick={() => setActiveTab("signin")}>
+                        Voltar para o login
+                      </Button>
+                    </div>
+                  </form>
+                </Form>
+              </TabsContent>
             </Tabs>
           </CardContent>
         </Card>
-
-        <div className="text-center text-xs text-muted-foreground">
-          <Link to="/" className="underline hover:text-foreground">
-            Voltar para o inicio
-          </Link>
-        </div>
       </div>
     </div>
   );
