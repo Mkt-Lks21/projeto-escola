@@ -1,9 +1,10 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useChat } from "@/hooks/useChat";
 import AppSidebar from "@/components/sidebar/AppSidebar";
 import ChatMessages from "@/components/chat/ChatMessages";
 import ChatInput from "@/components/chat/ChatInput";
 import { executeQuery } from "@/lib/api";
+import MobileHeader from "@/components/layout/MobileHeader";
 
 const Index = () => {
   const {
@@ -17,6 +18,8 @@ const Index = () => {
     deleteConversation,
     createNewConversation,
   } = useChat();
+
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const handleExecuteQuery = async (query: string) => {
     return await executeQuery(query);
@@ -43,16 +46,22 @@ const Index = () => {
   );
 
   return (
-    <div className="flex h-screen bg-background p-4 gap-4 relative z-10">
+    <div className="flex flex-col md:flex-row h-screen bg-background p-0 md:p-4 md:gap-4 relative z-10">
+      <MobileHeader
+        onOpenSidebar={() => setIsSidebarOpen(true)}
+        onNewConversation={createNewConversation}
+      />
       <AppSidebar
         conversations={conversations}
         currentConversationId={currentConversationId}
         onSelectConversation={selectConversation}
         onDeleteConversation={deleteConversation}
         onNewConversation={createNewConversation}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
       />
 
-      <main className="flex-1 flex flex-col glass-panel rounded-2xl overflow-hidden relative z-10">
+      <main className="flex-1 flex flex-col glass-panel md:rounded-2xl overflow-hidden relative z-10">
         <ChatMessages
           messages={messages}
           isLoading={isLoading}
