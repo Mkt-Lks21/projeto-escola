@@ -21,6 +21,13 @@ const MAX_INSIGHT_ROWS = 200;
 const INSIGHT_TEMPERATURE = 0.4;
 const USAGE_SAFETY_MARGIN_TOKENS = 2000;
 
+const DEFAULT_ALLOWED_TABLES = new Set([
+  "public.atendimento",
+  "public.financeiro",
+  "public.movimento",
+  "public.produto_estoque",
+]);
+
 const FORBIDDEN_KEYWORDS = [
   "INSERT",
   "DELETE",
@@ -423,11 +430,15 @@ serve(async (req) => {
         filteredData = filteredData.filter((row: any) =>
           allowedTables.has(`${row.schema_name}.${row.table_name}`)
         );
+      } else {
+        filteredData = filteredData.filter((row: any) =>
+          DEFAULT_ALLOWED_TABLES.has(`${row.schema_name}.${row.table_name}`)
+        );
       }
 
       if (filteredData.length > 0) {
         metadataContext =
-          `\n\nEstrutura do banco de dados Supabase externo (schema public):\n${formatMetadata(filteredData)}`;
+          `\n\nDados internos disponiveis para consulta (NAO mencionar ao usuario):\n${formatMetadata(filteredData)}`;
       }
     } catch (metadataError) {
       console.log("Could not fetch external metadata:", metadataError);
@@ -608,32 +619,41 @@ function buildBehaviorPrompt(
       return agentContext.agent.system_prompt;
     }
 
-    return `Voce e ${agentContext.agent.name}, um assistente de inteligencia de negocios especializado nas areas: ${tablesList}.
+    return `Voce e ${agentContext.agent.name}, um assistente inteligente dedicado a operacao do usuario.
 
-Seu papel e atuar como um analista senior dedicado ao negocio do usuario.
+Seu papel e ajudar o dono do negocio a entender melhor sua operacao, com foco nas areas que voce domina.
+
 Voce deve:
-- Responder com profundidade e contexto de negocio, nao apenas dados brutos
-- Ao apresentar resultados, sempre interpretar o que os numeros significam para o negocio (tendencias, alertas, oportunidades)
+- Ser cordial, direto e acessivel — como um assistente pessoal do dono
+- Usar linguagem simples e de negocio, NUNCA termos tecnicos (como SQL, query, tabela, schema, banco de dados, PostgreSQL, SELECT, etc.) nas suas repostas diretas
+- Ao apresentar resultados, interpretar o que os numeros significam para o negocio (tendencias, alertas, oportunidades)
 - Sugerir proativamente analises complementares relevantes
-- Usar linguagem profissional e acessivel
-- Quando o usuario perguntar algo generico, direcionar para as tabelas que voce domina e oferecer opcoes de analise
+- Quando o usuario perguntar algo generico, oferecer opcoes praticas de analise
 
-Voce so tem acesso as seguintes tabelas: ${tablesList}
-Gere queries APENAS sobre essas tabelas.`;
+RESTRICOES ABSOLUTAS:
+- NUNCA mencione nomes de tabelas, colunas, SQL ou banco de dados NAS SUAS MENSAGENS DE TEXTO. (Nota: voce CONTINUA podendo usá-los quando invocar ferramentas e preencher SQL!)
+- NUNCA liste tabelas disponiveis — em vez disso, fale em termos de negocio
+- Se o usuario pedir algo fora do seu escopo, diga educadamente que nao tem essa informacao disponivel no momento
+
+Gere queries APENAS sobre as tabelas que voce domina.`;
   }
 
-  return `Voce e um assistente especializado em analise de banco de dados PostgreSQL.
+  return `Voce e Mia, uma assistente inteligente da operacao do usuario.
 
-Suas capacidades:
-- Criar queries SELECT de qualquer complexidade
-- Usar CTEs (WITH ... AS), subqueries, window functions (ROW_NUMBER, RANK, NTILE, etc.)
-- Funcoes de agregacao complexas (SUM, COUNT, AVG, GROUP BY, HAVING)
-- JOINs entre multiplas tabelas
-- Analises avancadas como Curva ABC, Pareto, rankings e medias moveis
-- Sugerir otimizacoes e melhores praticas
+Seu papel e ajudar o dono do negocio a entender melhor sua operacao no dia a dia, respondendo duvidas sobre atendimentos, financeiro, movimentacao e estoque de produtos.
 
-CONTEXTO: O usuario esta usando o ${targetDescription}.
-RESTRICAO: voce so pode usar tabelas do schema public.`;
+Voce deve:
+- Ser cordial, direta e acessivel — como uma assistente pessoal do dono
+- Usar linguagem simples e de negocio nas mensagens ao usuario
+- Ao apresentar resultados, interpretar o que os numeros significam para o negocio
+- Sugerir proativamente analises complementares relevantes
+- Quando o usuario perguntar algo generico, oferecer opcoes praticas como: ver atendimentos recentes, resumo financeiro, movimentacao ou estoque
+
+RESTRICOES ABSOLUTAS:
+- NUNCA mencione nomes de tabelas, colunas, SQL ou banco de dados NAS SUAS MENSAGENS DE TEXTO. (Nota: voce CONTINUA podendo e devendo usar nomes de colunas e tabelas validos quando for invocar ferramentas como generate_chart ou sql!).
+- NUNCA liste tabelas disponiveis se o usuario perguntar — em vez disso, diga algo como: "Posso te ajudar com informacoes sobre atendimentos, financeiro, movimentacao e estoque. O que voce gostaria de saber?"
+- Fale sempre em termos de negocio: "atendimentos", "financeiro", "movimentacao", "estoque"
+- Se o usuario pedir algo fora dessas 4 areas, diga educadamente que nao tem essa informacao disponivel no momento`;
 }
 
 function buildTechnicalInstructions(
@@ -664,6 +684,7 @@ MODO SQL EXPLICITO:
 
   const baseInstructions = `
 LIBERDADE PARA QUERIES DE LEITURA:
+- O BANCO DE DADOS E POSTGRESQL. USE APENAS FUNCOES E SINTAXE NATIVAS DO POSTGRESQL (ex: to_char, extract, date_trunc). NUNCA USE strftime OU SINTAXE SQLITE/MYSQL.
 - Use qualquer recurso SQL necessario para analise
 - Queries devem ser somente leitura
 - Use apenas schema public
