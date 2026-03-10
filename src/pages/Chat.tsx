@@ -53,35 +53,22 @@ export default function Chat() {
   };
 
   const greeting = useMemo(() => {
-    const name = "Arquem";
     const variants = [
       "Como posso te ajudar hoje?",
       "No que voce precisa hoje?",
-      "Que insight do seu banco voce quer ver?",
+      "Que informacao da sua operacao posso trazer pra voce?",
     ];
     const index = Math.floor(Math.random() * variants.length);
-    return { title: `Ola, ${name}.`, subtitle: variants[index] };
+    return { title: "Ola! \u{1F44B}", subtitle: variants[index] };
   }, []);
 
   const suggestions = useMemo(() => {
-    const fallback = [
-      "Quais tabelas existem no banco?",
-      "Mostre os ultimos 10 registros de uma tabela.",
-      "Quais metricas principais posso acompanhar aqui?",
-    ];
-
-    if (!agentTables.length) return fallback;
-
-    const toName = (table: AgentTable) => `${table.schema_name}.${table.table_name}`;
-    const tableNames = agentTables.slice(0, 3).map(toName);
-    const pick = (index: number) => tableNames[index] || tableNames[0];
-
     return [
-      `Quais insights principais existem na tabela ${pick(0)}?`,
-      `Mostre os 10 registros mais recentes de ${pick(1)}.`,
-      `Resuma os principais indicadores de ${pick(2)} por mes.`,
+      "Como estao meus atendimentos recentes?",
+      "Me de um resumo financeiro do mes.",
+      "Qual a situacao do meu estoque?",
     ];
-  }, [agentTables]);
+  }, []);
 
   return (
     <div className="flex flex-col md:flex-row h-screen bg-background p-0 md:p-4 md:gap-4 relative z-10">
