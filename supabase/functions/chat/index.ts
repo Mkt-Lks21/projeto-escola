@@ -779,6 +779,7 @@ ${accessBlock}
 
 LIBERDADE PARA QUERIES DE LEITURA:
 - O BANCO DE DADOS E POSTGRESQL. USE APENAS FUNCOES E SINTAXE NATIVAS DO POSTGRESQL (ex: to_char, extract, date_trunc). NUNCA USE strftime OU SINTAXE SQLITE/MYSQL.
+- SINTAXE SQL OBRIGATORIA: Use operadores padrão (AND, OR, IS NULL). NUNCA traduza operadores para português (exemplo: não use "ou" no lugar de "OR", nem "e" no lugar de "AND").
 - Use qualquer recurso SQL necessario para analise
 - Queries devem ser somente leitura
 - NUNCA coloque ponto e virgula (;) no fim da query
