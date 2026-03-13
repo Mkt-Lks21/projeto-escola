@@ -246,7 +246,7 @@ export default function AppSidebar({
       <div className="p-4 border-b border-white/40 space-y-1">
         <Link to="/" className="flex items-center gap-2">
           <img src="/logo-arquem.svg" alt="Arquem" className="w-6 h-6 object-contain" />
-          <span className="font-semibold">Arquem Analytics</span>
+          <span className="font-semibold">Rb Analytics</span>
         </Link>
         <p className="text-xs text-muted-foreground truncate" title={user?.email || ""}>
           {user?.email || "Usuario autenticado"}
