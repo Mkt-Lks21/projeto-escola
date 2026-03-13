@@ -34,6 +34,7 @@ interface AppSidebarProps {
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
   onNewConversation: () => void;
+  onDisplayNameChange?: (displayName: string) => void;
   agentId?: string;
   isOpen?: boolean;
   onClose?: () => void;
@@ -65,6 +66,7 @@ export default function AppSidebar({
   onSelectConversation,
   onDeleteConversation,
   onNewConversation,
+  onDisplayNameChange,
   agentId,
   isOpen = false,
   onClose,
@@ -138,8 +140,12 @@ export default function AppSidebar({
 
   const displayName = useMemo(() => {
     if (profile?.display_name?.trim()) return profile.display_name.trim();
-    return user?.email?.split("@")[0] || "Usuario";
+    return user?.email?.split("@")?.[0] || "Usuario";
   }, [profile?.display_name, user?.email]);
+
+  useEffect(() => {
+    onDisplayNameChange?.(displayName);
+  }, [displayName, onDisplayNameChange]);
 
   const username = useMemo(() => {
     if (profile?.username?.trim()) return `@${profile.username.trim()}`;
@@ -240,7 +246,7 @@ export default function AppSidebar({
       <div className="p-4 border-b border-white/40 space-y-1">
         <Link to="/" className="flex items-center gap-2">
           <img src="/logo-arquem.svg" alt="Arquem" className="w-6 h-6 object-contain" />
-          <span className="font-semibold">Arquem Analyst</span>
+          <span className="font-semibold">Arquem Analytics</span>
         </Link>
         <p className="text-xs text-muted-foreground truncate" title={user?.email || ""}>
           {user?.email || "Usuario autenticado"}
