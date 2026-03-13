@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useChat } from "@/hooks/useChat";
+import { useAuth } from "@/hooks/useAuth";
 import AppSidebar from "@/components/sidebar/AppSidebar";
 import ChatMessages from "@/components/chat/ChatMessages";
 import ChatInput from "@/components/chat/ChatInput";
@@ -7,6 +8,8 @@ import { executeQuery } from "@/lib/api";
 import MobileHeader from "@/components/layout/MobileHeader";
 
 const Index = () => {
+  const { user } = useAuth();
+  const [displayName, setDisplayName] = useState(() => user?.email?.split("@")?.[0] || "Usuario");
   const {
     conversations,
     currentConversationId,
@@ -25,22 +28,29 @@ const Index = () => {
     return await executeQuery(query);
   };
 
-  const greeting = useMemo(() => {
-    const name = "Arquem";
+  const greetingSubtitle = useMemo(() => {
     const variants = [
       "Como posso te ajudar hoje?",
-      "No que voce precisa hoje?",
-      "Que insight do seu banco voce quer ver?",
+      "No que você precisa hoje?",
+      "Qual parte da sua operação você quer acompanhar?",
     ];
     const index = Math.floor(Math.random() * variants.length);
-    return { title: `Ola, ${name}.`, subtitle: variants[index] };
+    return variants[index];
   }, []);
+
+  const greeting = useMemo(() => {
+    const normalized = displayName.trim();
+    return {
+      title: normalized ? `Olá, ${normalized}.` : "Olá!",
+      subtitle: greetingSubtitle,
+    };
+  }, [displayName, greetingSubtitle]);
 
   const suggestions = useMemo(
     () => [
-      "Quais tabelas existem no banco?",
-      "Mostre os ultimos 10 registros de uma tabela.",
-      "Quais metricas principais posso acompanhar aqui?",
+      "Quantos atendimentos tivemos nos últimos 7 dias?",
+      "Qual é o total recebido e o total pendente neste mês?",
+      "Quais produtos estão com estoque baixo e precisam de reposição?",
     ],
     [],
   );
@@ -59,6 +69,7 @@ const Index = () => {
         onNewConversation={createNewConversation}
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
+        onDisplayNameChange={setDisplayName}
       />
 
       <main className="flex-1 flex flex-col glass-panel md:rounded-2xl overflow-hidden relative z-10">
@@ -79,4 +90,3 @@ const Index = () => {
 };
 
 export default Index;
-
