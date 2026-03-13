@@ -108,7 +108,7 @@ export default function Auth() {
         <div className="glass-panel rounded-2xl p-4 flex items-center gap-3">
           <Database className="w-5 h-5 text-primary" />
           <div>
-            <h1 className="text-lg font-semibold">Arquem Analyst</h1>
+            <h1 className="text-lg font-semibold">Arquem Analytics</h1>
             <p className="text-xs text-muted-foreground">Acesse sua conta para continuar</p>
           </div>
         </div>

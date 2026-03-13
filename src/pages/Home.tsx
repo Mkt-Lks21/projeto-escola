@@ -44,7 +44,7 @@ export default function Home() {
         <header className="mx-4 mt-4 flex items-center justify-between px-6 py-4 rounded-2xl glass-panel">
           <div className="flex items-center gap-2">
             <Database className="w-6 h-6 text-primary" />
-            <span className="font-semibold text-lg">Arquem Analyst</span>
+            <span className="font-semibold text-lg">Arquem Analytics</span>
           </div>
           <Link
             to="/admin"
@@ -56,9 +56,9 @@ export default function Home() {
         </header>
 
         <div className="flex-1 flex flex-col items-center px-6 py-12">
-          <h1 className="text-3xl font-bold mb-2">Bem-vindo ao Arquem Analyst</h1>
+          <h1 className="text-3xl font-bold mb-2">Bem-vindo ao Arquem Analytics</h1>
           <p className="text-muted-foreground mb-10">
-            Converse com seus dados ou crie agentes especialistas.
+            Converse sobre sua operação ou crie agentes especialistas.
           </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 w-full max-w-xl mb-14">
@@ -71,7 +71,7 @@ export default function Home() {
               </div>
               <h2 className="font-semibold text-lg mb-1">Novo Chat</h2>
               <p className="text-sm text-muted-foreground">
-                Inicie uma conversa livre com seu banco de dados
+                Tire dúvidas sobre Atendimento, Financeiro, Movimentações e Estoque
               </p>
             </Link>
 
@@ -84,7 +84,7 @@ export default function Home() {
               </div>
               <h2 className="font-semibold text-lg mb-1">Criar Agente</h2>
               <p className="text-sm text-muted-foreground">
-                Crie um agente especialista em tabelas especificas
+                Crie um agente especialista em áreas específicas da operação
               </p>
             </Link>
           </div>

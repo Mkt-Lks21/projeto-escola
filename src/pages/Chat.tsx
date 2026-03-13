@@ -1,17 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { useChat } from "@/hooks/useChat";
+import { useAuth } from "@/hooks/useAuth";
 import AppSidebar from "@/components/sidebar/AppSidebar";
 import ChatMessages from "@/components/chat/ChatMessages";
 import ChatInput from "@/components/chat/ChatInput";
 import { executeQuery, getAgentTables } from "@/lib/api";
+import { isAllowedOperationTable, toOperationAreasList } from "@/lib/operationAreas";
 import { useParams, useSearchParams } from "react-router-dom";
 import { AgentTable } from "@/types/database";
+
 
 export default function Chat() {
   const { agentId } = useParams<{ agentId?: string }>();
   const [searchParams] = useSearchParams();
   const initialConversationId = searchParams.get("c") || undefined;
   const [agentTables, setAgentTables] = useState<AgentTable[]>([]);
+  const { user } = useAuth();
+  const [displayName, setDisplayName] = useState(() => user?.email?.split("@")?.[0] || "Usuario");
   const {
     conversations,
     currentConversationId,
@@ -50,34 +55,46 @@ export default function Chat() {
     return await executeQuery(query);
   };
 
-  const greeting = useMemo(() => {
-    const name = "Arquem";
+  const greetingSubtitle = useMemo(() => {
     const variants = [
       "Como posso te ajudar hoje?",
-      "No que voce precisa hoje?",
-      "Que insight do seu banco voce quer ver?",
+      "No que você precisa hoje?",
+      "Qual parte da sua operação você quer acompanhar?",
     ];
     const index = Math.floor(Math.random() * variants.length);
-    return { title: `Ola, ${name}.`, subtitle: variants[index] };
+    return variants[index];
   }, []);
+
+  const greeting = useMemo(() => {
+    const normalized = displayName.trim();
+    return {
+      title: normalized ? `Olá, ${normalized}.` : "Olá!",
+      subtitle: greetingSubtitle,
+    };
+  }, [displayName, greetingSubtitle]);
 
   const suggestions = useMemo(() => {
     const fallback = [
-      "Quais tabelas existem no banco?",
-      "Mostre os ultimos 10 registros de uma tabela.",
-      "Quais metricas principais posso acompanhar aqui?",
+      "Quantos atendimentos tivemos nos últimos 7 dias?",
+      "Qual é o total recebido e o total pendente neste mês?",
+      "Quais produtos estão com estoque baixo e precisam de reposição?",
     ];
 
     if (!agentTables.length) return fallback;
 
-    const toName = (table: AgentTable) => `${table.schema_name}.${table.table_name}`;
-    const tableNames = agentTables.slice(0, 3).map(toName);
-    const pick = (index: number) => tableNames[index] || tableNames[0];
+    const allowedTableNames = agentTables
+      .map((t: AgentTable) => t.table_name)
+      .filter(isAllowedOperationTable);
+
+    const areas = toOperationAreasList(allowedTableNames);
+    if (!areas.length) return fallback;
+
+    const pick = (index: number) => areas[index] || areas[0];
 
     return [
-      `Quais insights principais existem na tabela ${pick(0)}?`,
-      `Mostre os 10 registros mais recentes de ${pick(1)}.`,
-      `Resuma os principais indicadores de ${pick(2)} por mes.`,
+      `Como está o ${pick(0)} hoje?`,
+      `Quais são os principais pontos de atenção em ${pick(1)} neste mês?`,
+      `Tem algum alerta importante em ${pick(2)} agora?`,
     ];
   }, [agentTables]);
 
@@ -90,6 +107,7 @@ export default function Chat() {
         onDeleteConversation={deleteConversation}
         onNewConversation={createNewConversation}
         agentId={agentId}
+        onDisplayNameChange={setDisplayName}
       />
 
       <main className="flex-1 flex flex-col glass-panel rounded-2xl overflow-hidden relative z-10">

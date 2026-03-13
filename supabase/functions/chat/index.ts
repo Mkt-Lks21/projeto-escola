@@ -35,6 +35,25 @@ const FORBIDDEN_KEYWORDS = [
   "CREATE",
 ];
 
+const OPERATION_TABLE_ALLOWLIST = [
+  "atendimento",
+  "financeiro",
+  "movimento",
+  "produto_estoque",
+];
+
+const OPERATION_TABLE_ALLOWLIST_SET = new Set(OPERATION_TABLE_ALLOWLIST);
+const OPERATION_QUALIFIED_ALLOWLIST_SET = new Set(
+  OPERATION_TABLE_ALLOWLIST.map((table) => `public.${table}`),
+);
+
+const OPERATION_TABLE_LABELS: Record<string, string> = {
+  atendimento: "Atendimento",
+  financeiro: "Financeiro",
+  movimento: "Movimentações",
+  produto_estoque: "Estoque",
+};
+
 const CHART_TYPES = ["bar", "line", "pie", "scatter"] as const;
 const INSIGHT_SCOPES = ["broad", "specific"] as const;
 const TOOL_NAMES = ["generate_chart", "generate_insight"] as const;
@@ -403,42 +422,37 @@ serve(async (req) => {
     const lastUserMessage = getLastUserMessage(messages);
     const userIntent = detectUserIntent(lastUserMessage);
     const chartAndInsightRequested = detectChartAndInsightIntent(lastUserMessage);
+    const effectiveAllowedTables = computeEffectiveAllowedQualifiedTables(agentContext);
 
     let metadataContext = "";
     try {
       const { data: externalMetadata } = await externalSupabase.rpc("get_database_metadata");
       let filteredData = (externalMetadata || []).filter((row: any) => row.schema_name === "public");
 
-      if (agentContext && agentContext.tables.length > 0) {
-        const allowedTables = new Set(
-          agentContext.tables.map((table: any) => {
-            const schemaName =
-              typeof table.schema_name === "string" && table.schema_name.startsWith("external.")
-                ? table.schema_name.replace(/^external\./, "")
-                : table.schema_name;
-            return `${schemaName}.${table.table_name}`;
-          }),
-        );
-
-        filteredData = filteredData.filter((row: any) =>
-          allowedTables.has(`${row.schema_name}.${row.table_name}`)
-        );
-      }
+      filteredData = filteredData.filter((row: any) =>
+        effectiveAllowedTables.has(
+          toQualifiedLower(
+            typeof row.schema_name === "string" ? row.schema_name : "public",
+            typeof row.table_name === "string" ? row.table_name : "",
+          ),
+        )
+      );
 
       if (filteredData.length > 0) {
         metadataContext =
-          `\n\nEstrutura do banco de dados Supabase externo (schema public):\n${formatMetadata(filteredData)}`;
+          `\n\nDicionario interno de dados (nao citar ao usuario):\n${formatMetadata(filteredData)}`;
       }
     } catch (metadataError) {
       console.log("Could not fetch external metadata:", metadataError);
     }
 
-    const targetDescription = "BANCO DE DADOS EXTERNO no Supabase (apenas schema public)";
-    const behaviorPrompt = buildBehaviorPrompt(agentContext, targetDescription);
+    const targetDescription = "dados da operacao (atendimento, financeiro, movimentacoes e estoque)";
+    const behaviorPrompt = buildBehaviorPrompt(agentContext, targetDescription, effectiveAllowedTables);
     const technicalInstructions = buildTechnicalInstructions(
       userIntent,
       lastUserMessage,
       chartAndInsightRequested,
+      effectiveAllowedTables,
     );
     const systemPrompt = `${behaviorPrompt}\n${technicalInstructions}\n${metadataContext}`;
 
@@ -469,7 +483,11 @@ serve(async (req) => {
     let responseToReturn: Response;
 
     if (llmResult.type === "tool_call_chart") {
-      const queryData = await executeChartQuery(externalSupabase, llmResult.args.sql_query);
+      const queryData = await executeChartQuery(
+        externalSupabase,
+        llmResult.args.sql_query,
+        effectiveAllowedTables,
+      );
       const pythonResponse = await generateChartFromPython(queryData, llmResult.args);
 
       if (chartAndInsightRequested) {
@@ -502,6 +520,7 @@ serve(async (req) => {
         externalSupabase,
         lastUserMessage,
         llmResult.args,
+        effectiveAllowedTables,
       );
       totalUsage = mergeUsage(totalUsage, insightResult.usage);
       responseToReturn = createInsightSseResponse(insightResult.payload);
@@ -540,6 +559,11 @@ serve(async (req) => {
     return responseToReturn;
   } catch (error) {
     console.error("Chat error:", error);
+
+    if (error instanceof UserFacingError) {
+      return createTextSseResponse(error.message);
+    }
+
     if (error instanceof Error && error.message === "USER_NOT_LINKED_TO_ACES") {
       return createJsonResponse(
         {
@@ -588,58 +612,134 @@ serve(async (req) => {
   }
 });
 
+class UserFacingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UserFacingError";
+  }
+}
+
+function normalizeExternalSchemaName(raw: unknown): string | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+
+  if (raw.startsWith("external.")) {
+    return raw.replace(/^external\./, "");
+  }
+
+  return raw;
+}
+
+function toQualifiedLower(schemaName: string | null, tableName: string): string {
+  const schema = schemaName?.trim() ? schemaName.trim() : "public";
+  return `${schema}.${tableName}`.toLowerCase();
+}
+
+function computeEffectiveAllowedQualifiedTables(
+  agentContext: { tables: any[] } | null,
+): Set<string> {
+  const globalAllowed = new Set(OPERATION_QUALIFIED_ALLOWLIST_SET);
+
+  if (!agentContext || !Array.isArray(agentContext.tables) || agentContext.tables.length === 0) {
+    return globalAllowed;
+  }
+
+  const selected = new Set(
+    agentContext.tables
+      .map((table: any) => {
+        const schema = normalizeExternalSchemaName(table?.schema_name) || "public";
+        const tableName = typeof table?.table_name === "string" ? table.table_name : "";
+        if (!tableName) return null;
+        return toQualifiedLower(schema, tableName);
+      })
+      .filter((value: string | null): value is string => Boolean(value)),
+  );
+
+  const intersection = new Set(
+    [...globalAllowed].filter((qualified) => selected.has(qualified)),
+  );
+
+  return intersection.size > 0 ? intersection : globalAllowed;
+}
+
+function listAllowedTableNames(allowedQualified: Set<string>): string[] {
+  const allowed = new Set(
+    [...allowedQualified]
+      .map((qualified) => qualified.split(".")[1] || "")
+      .filter(Boolean),
+  );
+
+  return OPERATION_TABLE_ALLOWLIST.filter((table) => allowed.has(table));
+}
+
+function listAllowedAreaLabels(allowedQualified: Set<string>): string[] {
+  return listAllowedTableNames(allowedQualified).map(
+    (table) => OPERATION_TABLE_LABELS[table] || table,
+  );
+}
+
+function formatAllowedQualifiedList(allowedQualified: Set<string>): string {
+  const ordered = listAllowedTableNames(allowedQualified).map((table) => `public.${table}`);
+  return ordered.join(", ");
+}
+
+function buildAccessFallbackMessage(allowedQualified: Set<string>): string {
+  const labels = listAllowedAreaLabels(allowedQualified);
+  const areasText = labels.join(", ");
+  return `Hoje eu consigo te ajudar com ${areasText}. Sobre qual ponto da operação você quer ver números?`;
+}
+
 function buildBehaviorPrompt(
   agentContext: { agent: any; tables: any[] } | null,
   targetDescription: string,
+  allowedTables: Set<string>,
 ): string {
-  if (agentContext) {
-    const tablesList = agentContext.tables
-      .map((table: any) => {
-        const schemaName =
-          typeof table.schema_name === "string" && table.schema_name.startsWith("external.")
-            ? table.schema_name.replace(/^external\./, "")
-            : table.schema_name;
-        return `${schemaName}.${table.table_name}`;
-      })
-      .filter((table: string) => table.startsWith("public."))
-      .join(", ");
+  const agentName =
+    agentContext?.agent?.name && typeof agentContext.agent.name === "string"
+      ? agentContext.agent.name
+      : "Arquem";
 
-    if (agentContext.agent.system_prompt) {
-      return agentContext.agent.system_prompt;
-    }
+  const customPrompt =
+    agentContext?.agent?.system_prompt && typeof agentContext.agent.system_prompt === "string"
+      ? agentContext.agent.system_prompt.trim()
+      : "";
 
-    return `Voce e ${agentContext.agent.name}, um assistente de inteligencia de negocios especializado nas areas: ${tablesList}.
+  const allowedAreasText = listAllowedAreaLabels(allowedTables).join(", ");
+  const allowedQualifiedText = formatAllowedQualifiedList(allowedTables);
 
-Seu papel e atuar como um analista senior dedicado ao negocio do usuario.
-Voce deve:
-- Responder com profundidade e contexto de negocio, nao apenas dados brutos
-- Ao apresentar resultados, sempre interpretar o que os numeros significam para o negocio (tendencias, alertas, oportunidades)
-- Sugerir proativamente analises complementares relevantes
-- Usar linguagem profissional e acessivel
-- Quando o usuario perguntar algo generico, direcionar para as tabelas que voce domina e oferecer opcoes de analise
+  const intro = `Voce e ${agentName}, um assistente do dono do negocio.
 
-Voce so tem acesso as seguintes tabelas: ${tablesList}
-Gere queries APENAS sobre essas tabelas.`;
-  }
+Seu papel e ajudar com duvidas da operacao e tomada de decisao usando os dados disponiveis.
+Areas de dados disponiveis: ${allowedAreasText}.
 
-  return `Voce e um assistente especializado em analise de banco de dados PostgreSQL.
+CONTEXTO: ${targetDescription}.`;
 
-Suas capacidades:
-- Criar queries SELECT de qualquer complexidade
-- Usar CTEs (WITH ... AS), subqueries, window functions (ROW_NUMBER, RANK, NTILE, etc.)
-- Funcoes de agregacao complexas (SUM, COUNT, AVG, GROUP BY, HAVING)
-- JOINs entre multiplas tabelas
-- Analises avancadas como Curva ABC, Pareto, rankings e medias moveis
-- Sugerir otimizacoes e melhores praticas
+  const customBlock = customPrompt
+    ? `\n\nPrompt personalizado do agente (do admin):\n${customPrompt}`
+    : "";
 
-CONTEXTO: O usuario esta usando o ${targetDescription}.
-RESTRICAO: voce so pode usar tabelas do schema public.`;
+  const fixedRules = `
+
+REGRAS FIXAS (NAO VIOLAR):
+- Nao fale sobre SQL, PostgreSQL, schema, tabelas, colunas ou detalhes tecnicos para o usuario final.
+- Responda com contexto de negocio e interpretacao (tendencias, alertas, oportunidades).
+- Sempre que fizer sentido, sugira proximos passos objetivos.
+- Se a pergunta exigir dados fora das areas disponiveis, diga que nao tem esses dados aqui e ofereca alternativas dentro das areas.
+- Se o usuario perguntar sobre "tabelas" ou "banco de dados", responda em termos de areas suportadas e redirecione para a operacao.
+
+Acesso interno (nao citar ao usuario):
+- Fontes permitidas: ${allowedQualifiedText}
+- Nunca consulte nada fora dessas fontes.`;
+
+  return `${intro}${customBlock}${fixedRules}`;
 }
 
 function buildTechnicalInstructions(
   userIntent: UserIntent,
   lastUserMessage: string,
   chartAndInsightRequested: boolean,
+  allowedTables: Set<string>,
 ): string {
   const technicalSqlAllowed = userIntent === "explicit_sql";
   const isComparativeChartRequest =
@@ -647,12 +747,17 @@ function buildTechnicalInstructions(
   const isCombinedChartInsightRequest =
     userIntent === "chart" && chartAndInsightRequested;
 
+  const allowedQualifiedText = formatAllowedQualifiedList(allowedTables);
+  const accessBlock = `ACESSO A DADOS (fixo, nao violar):
+- Use APENAS estas fontes (nao citar ao usuario): ${allowedQualifiedText}`;
+
   if (technicalSqlAllowed) {
     return `
+${accessBlock}
+
 LIBERDADE PARA QUERIES DE LEITURA:
 - Use qualquer recurso SQL necessario para analise
 - Queries devem ser somente leitura
-- Use apenas schema public
 - NUNCA coloque ponto e virgula (;) no fim da query
 
 MODO SQL EXPLICITO:
@@ -663,10 +768,11 @@ MODO SQL EXPLICITO:
   }
 
   const baseInstructions = `
+${accessBlock}
+
 LIBERDADE PARA QUERIES DE LEITURA:
 - Use qualquer recurso SQL necessario para analise
 - Queries devem ser somente leitura
-- Use apenas schema public
 - NUNCA coloque ponto e virgula (;) no fim da query
 
 USO OBRIGATORIO DA TOOL generate_chart:
@@ -681,7 +787,8 @@ USO OBRIGATORIO DA TOOL generate_insight:
 
 REGRA DE OURO:
 - Nunca exponha SQL ao usuario final em respostas comuns
-- Nunca retorne [AUTO_EXECUTE] fora do modo SQL explicito`;
+- Nunca retorne [AUTO_EXECUTE] fora do modo SQL explicito
+- Nunca cite nomes de tabelas/colunas, schemas ou detalhes tecnicos ao usuario final`;
 
   let output = baseInstructions;
 
@@ -1099,10 +1206,11 @@ function formatMetadata(metadata: any[]): string {
 
   let result = "";
   for (const [schema, tables] of Object.entries(grouped)) {
-    result += `\nSchema: ${schema}\n`;
+    if (schema !== "public") {
+      continue;
+    }
     for (const [table, columns] of Object.entries(tables)) {
-      result += `  Tabela: ${table}\n`;
-      result += `    Colunas: ${columns.join(", ")}\n`;
+      result += `\nFonte: ${table}\nCampos: ${columns.join(", ")}\n`;
     }
   }
   return result;
@@ -1516,23 +1624,288 @@ function referencesNonPublicSchema(query: string): boolean {
   return false;
 }
 
+type TableReference = { schema: string | null; table: string };
+
+function normalizeSqlForTableScan(query: string): string {
+  return (query || "")
+    .replace(/--.*$/gm, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/'([^']|'')*'/g, " ")
+    .replace(/"/g, "")
+    .toLowerCase();
+}
+
+function extractTopLevelCteNames(query: string): Set<string> {
+  const normalized = normalizeSqlForTableScan(query).trimStart();
+  const result = new Set<string>();
+
+  if (!normalized.startsWith("with")) {
+    return result;
+  }
+
+  const skipWhitespace = (value: string, index: number) => {
+    let cursor = index;
+    while (cursor < value.length && /\s/.test(value[cursor])) {
+      cursor += 1;
+    }
+    return cursor;
+  };
+
+  const skipBalancedParens = (value: string, index: number) => {
+    let cursor = index;
+    if (value[cursor] !== "(") return cursor;
+
+    let depth = 0;
+    while (cursor < value.length) {
+      const ch = value[cursor];
+      if (ch === "(") depth += 1;
+      if (ch === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          cursor += 1;
+          break;
+        }
+      }
+      cursor += 1;
+    }
+    return cursor;
+  };
+
+  const readIdentifier = (value: string, index: number) => {
+    const cursor = skipWhitespace(value, index);
+    const match = /^[a-z_][a-z0-9_]*/.exec(value.slice(cursor));
+    if (!match) return null;
+    return { name: match[0], nextIndex: cursor + match[0].length };
+  };
+
+  let cursor = 4; // "with".length
+  cursor = skipWhitespace(normalized, cursor);
+
+  if (/^recursive\b/.test(normalized.slice(cursor))) {
+    cursor += "recursive".length;
+    cursor = skipWhitespace(normalized, cursor);
+  }
+
+  while (cursor < normalized.length) {
+    const id = readIdentifier(normalized, cursor);
+    if (!id) {
+      break;
+    }
+
+    result.add(id.name);
+    cursor = skipWhitespace(normalized, id.nextIndex);
+
+    if (normalized[cursor] === "(") {
+      cursor = skipBalancedParens(normalized, cursor);
+      cursor = skipWhitespace(normalized, cursor);
+    }
+
+    if (!/^as\b/.test(normalized.slice(cursor))) {
+      break;
+    }
+
+    cursor += 2; // "as"
+    cursor = skipWhitespace(normalized, cursor);
+
+    if (normalized[cursor] === "(") {
+      cursor = skipBalancedParens(normalized, cursor);
+      cursor = skipWhitespace(normalized, cursor);
+    }
+
+    if (normalized[cursor] === ",") {
+      cursor += 1;
+      cursor = skipWhitespace(normalized, cursor);
+      continue;
+    }
+
+    break;
+  }
+
+  return result;
+}
+
+function extractReferencedTables(query: string): TableReference[] {
+  const normalized = normalizeSqlForTableScan(query);
+  const cteNames = extractTopLevelCteNames(query);
+
+  type Token = { type: "identifier" | "symbol"; value: string };
+  const tokens: Token[] = [];
+
+  let cursor = 0;
+  while (cursor < normalized.length) {
+    const ch = normalized[cursor];
+
+    if (/\s/.test(ch)) {
+      cursor += 1;
+      continue;
+    }
+
+    if (ch === "(" || ch === ")" || ch === "," || ch === ".") {
+      tokens.push({ type: "symbol", value: ch });
+      cursor += 1;
+      continue;
+    }
+
+    if (/[a-z_]/.test(ch)) {
+      let end = cursor + 1;
+      while (end < normalized.length && /[a-z0-9_]/.test(normalized[end])) {
+        end += 1;
+      }
+      tokens.push({ type: "identifier", value: normalized.slice(cursor, end) });
+      cursor = end;
+      continue;
+    }
+
+    cursor += 1;
+  }
+
+  const terminators = new Set([
+    "where",
+    "group",
+    "order",
+    "having",
+    "limit",
+    "union",
+    "intersect",
+    "except",
+    "window",
+    "fetch",
+    "offset",
+  ]);
+
+  const refs: TableReference[] = [];
+  const fromDepthStack: number[] = [];
+  let depth = 0;
+  let expectRelation = false;
+
+  const popFromDepths = () => {
+    while (fromDepthStack.length > 0 && fromDepthStack[fromDepthStack.length - 1] > depth) {
+      fromDepthStack.pop();
+    }
+  };
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+
+    if (token.type === "symbol") {
+      if (token.value === "(") {
+        if (expectRelation) {
+          expectRelation = false;
+        }
+        depth += 1;
+        continue;
+      }
+
+      if (token.value === ")") {
+        depth = Math.max(0, depth - 1);
+        popFromDepths();
+        continue;
+      }
+
+      if (
+        token.value === "," &&
+        fromDepthStack.length > 0 &&
+        fromDepthStack[fromDepthStack.length - 1] === depth
+      ) {
+        expectRelation = true;
+      }
+
+      continue;
+    }
+
+    const value = token.value;
+
+    if (value === "from") {
+      expectRelation = true;
+      fromDepthStack.push(depth);
+      continue;
+    }
+
+    if (value === "join") {
+      expectRelation = true;
+      continue;
+    }
+
+    if (terminators.has(value) && fromDepthStack.length > 0 && fromDepthStack[fromDepthStack.length - 1] === depth) {
+      fromDepthStack.pop();
+      expectRelation = false;
+      continue;
+    }
+
+    if (!expectRelation) {
+      continue;
+    }
+
+    if (value === "lateral") {
+      continue;
+    }
+
+    let schema: string | null = null;
+    let table = value;
+    let consumed = 0;
+
+    const dotToken = tokens[index + 1];
+    const nextId = tokens[index + 2];
+    if (dotToken?.type === "symbol" && dotToken.value === "." && nextId?.type === "identifier") {
+      schema = value;
+      table = nextId.value;
+      consumed = 2;
+    }
+
+    const afterToken = tokens[index + 1 + consumed];
+    if (afterToken?.type === "symbol" && afterToken.value === "(") {
+      expectRelation = false;
+      index += consumed;
+      continue;
+    }
+
+    if (!schema && cteNames.has(table)) {
+      expectRelation = false;
+      index += consumed;
+      continue;
+    }
+
+    refs.push({ schema, table });
+    expectRelation = false;
+    index += consumed;
+  }
+
+  return refs;
+}
+
+function assertQueryUsesOnlyAllowedTables(
+  query: string,
+  allowedQualifiedTables: Set<string>,
+): void {
+  const refs = extractReferencedTables(query);
+  for (const ref of refs) {
+    if (ref.schema && ref.schema !== "public") {
+      throw new UserFacingError(buildAccessFallbackMessage(allowedQualifiedTables));
+    }
+
+    const qualified = `${ref.schema || "public"}.${ref.table}`.toLowerCase();
+    if (!allowedQualifiedTables.has(qualified)) {
+      throw new UserFacingError(buildAccessFallbackMessage(allowedQualifiedTables));
+    }
+  }
+}
+
 async function executeReadOnlyQuery(
   externalSupabase: any,
   sqlQuery: string,
   purpose: "grafico" | "insight",
+  allowedTables: Set<string>,
 ): Promise<Record<string, unknown>[]> {
   const sanitizedQuery = sanitizeSqlQuery(sqlQuery);
   if (!sanitizedQuery) {
-    throw new Error(`A tool para ${purpose} retornou sql_query vazia.`);
+    throw new UserFacingError("Nao consegui montar uma consulta para responder. Pode reformular a pergunta?");
   }
 
   if (!isReadOnlyQuery(sanitizedQuery)) {
-    throw new Error(`A query de ${purpose} deve ser somente leitura (SELECT/CTE).`);
+    throw new UserFacingError("Eu consigo apenas consultar dados (sem alterar nada). Vamos ajustar a pergunta?");
   }
 
-  if (referencesNonPublicSchema(sanitizedQuery)) {
-    throw new Error(`Apenas tabelas do schema public sao permitidas para ${purpose}.`);
-  }
+  assertQueryUsesOnlyAllowedTables(sanitizedQuery, allowedTables);
 
   const { data, error } = await externalSupabase.rpc("execute_safe_query", {
     query_text: sanitizedQuery,
@@ -1545,12 +1918,20 @@ async function executeReadOnlyQuery(
   return Array.isArray(data) ? data : [];
 }
 
-async function executeChartQuery(externalSupabase: any, sqlQuery: string): Promise<Record<string, unknown>[]> {
-  return await executeReadOnlyQuery(externalSupabase, sqlQuery, "grafico");
+async function executeChartQuery(
+  externalSupabase: any,
+  sqlQuery: string,
+  allowedTables: Set<string>,
+): Promise<Record<string, unknown>[]> {
+  return await executeReadOnlyQuery(externalSupabase, sqlQuery, "grafico", allowedTables);
 }
 
-async function executeInsightQuery(externalSupabase: any, sqlQuery: string): Promise<Record<string, unknown>[]> {
-  return await executeReadOnlyQuery(externalSupabase, sqlQuery, "insight");
+async function executeInsightQuery(
+  externalSupabase: any,
+  sqlQuery: string,
+  allowedTables: Set<string>,
+): Promise<Record<string, unknown>[]> {
+  return await executeReadOnlyQuery(externalSupabase, sqlQuery, "insight", allowedTables);
 }
 
 async function generateChartFromPython(
@@ -1599,8 +1980,9 @@ async function runInsightFlow(
   externalSupabase: any,
   userQuestion: string,
   insightArgs: InsightToolArgs,
+  allowedTables: Set<string>,
 ): Promise<{ payload: InsightContentPayload; usage: TokenUsage }> {
-  const queryData = await executeInsightQuery(externalSupabase, insightArgs.sql_query);
+  const queryData = await executeInsightQuery(externalSupabase, insightArgs.sql_query, allowedTables);
   const rows = queryData.slice(0, MAX_INSIGHT_ROWS);
   const truncated = queryData.length > MAX_INSIGHT_ROWS;
   if (truncated) {

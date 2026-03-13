@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import { ArrowLeft, Bot, MessageSquare, Trash2, Database } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getAgent, getAgentTables, deleteAgent } from "@/lib/api";
+import { isAllowedOperationTable, toOperationAreaLabel } from "@/lib/operationAreas";
 import { Agent, AgentTable } from "@/types/database";
 import { toast } from "sonner";
 
@@ -40,6 +41,8 @@ export default function AgentDetail() {
 
   if (!agent) return null;
 
+  const visibleTables = tables.filter((t) => isAllowedOperationTable(t.table_name));
+
   return (
     <div className="min-h-screen bg-background relative z-10">
       <header className="mx-4 mt-4 flex items-center gap-3 px-6 py-4 rounded-2xl glass-panel">
@@ -67,20 +70,22 @@ export default function AgentDetail() {
         <div className="rounded-2xl glass-card p-4">
           <h3 className="font-semibold mb-2">Prompt</h3>
           <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-            {agent.system_prompt || "Usando prompt padrão de analista de negócios."}
+            {agent.system_prompt || "Usando prompt padrão de assistente operacional."}
           </p>
         </div>
 
-        {/* Tables */}
+        {/* Areas */}
         <div className="rounded-2xl glass-card p-4">
-          <h3 className="font-semibold mb-2">Tabelas ({tables.length})</h3>
+          <h3 className="font-semibold mb-2">Áreas ({visibleTables.length})</h3>
           <div className="space-y-1">
-            {tables.map((t) => (
+            {visibleTables.map((t) => (
               <div key={t.id} className="text-sm">
-                <span className="text-muted-foreground">{t.schema_name}.</span>
-                <span className="font-medium">{t.table_name}</span>
+                <span className="font-medium">{toOperationAreaLabel(t.table_name)}</span>
               </div>
             ))}
+            {visibleTables.length === 0 && (
+              <p className="text-sm text-muted-foreground">Nenhuma área configurada.</p>
+            )}
           </div>
         </div>
 

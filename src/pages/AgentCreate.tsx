@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { createAgent, setAgentTables, getMetadata } from "@/lib/api";
+import { isAllowedOperationTable, OPERATION_TABLE_ALLOWLIST, toOperationAreaLabel } from "@/lib/operationAreas";
 import { DatabaseMetadata } from "@/types/database";
 import { toast } from "sonner";
 import { Link } from "react-router-dom";
@@ -31,7 +32,15 @@ export default function AgentCreate() {
             tableSet.set(key, { schema: m.schema_name, table: m.table_name });
           }
         });
-        setAvailableTables(Array.from(tableSet.values()));
+        const order = new Map(OPERATION_TABLE_ALLOWLIST.map((name, index) => [name, index]));
+        const tables = Array.from(tableSet.values())
+          .filter(({ table }) => isAllowedOperationTable(table))
+          .sort((a, b) => {
+            const aOrder = order.get(a.table) ?? Number.MAX_SAFE_INTEGER;
+            const bOrder = order.get(b.table) ?? Number.MAX_SAFE_INTEGER;
+            return aOrder - bOrder;
+          });
+        setAvailableTables(tables);
       } catch (error) {
         console.error("Failed to load tables:", error);
       }
@@ -54,7 +63,7 @@ export default function AgentCreate() {
       return;
     }
     if (selectedTables.size === 0) {
-      toast.error("Selecione pelo menos uma tabela");
+      toast.error("Selecione pelo menos uma área");
       return;
     }
 
@@ -100,7 +109,7 @@ export default function AgentCreate() {
           <div>
             <h1 className="text-xl font-bold">Novo Agente Especialista</h1>
             <p className="text-sm text-muted-foreground">
-              Configure um agente com acesso a tabelas específicas
+              Configure um agente com acesso a áreas específicas da operação
             </p>
           </div>
         </div>
@@ -133,25 +142,25 @@ export default function AgentCreate() {
           <Textarea
             id="prompt"
             className="min-h-[140px]"
-            placeholder={`Deixe vazio para usar o prompt padrão de analista de negócios.\n\nExemplo personalizado:\n"Você é um analista financeiro focado em fluxo de caixa. Sempre destaque riscos de inadimplência e sugira ações preventivas."`}
+            placeholder={`Deixe vazio para usar o prompt padrão de assistente operacional.\n\nExemplo personalizado:\n"Você é um assistente financeiro focado em fluxo de caixa. Sempre destaque riscos de inadimplência e sugira ações preventivas."`}
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
           />
           <p className="text-xs text-muted-foreground">
-            Se vazio, o agente usará um prompt padrão de analista de negócios senior.
+            Se vazio, o agente usará um prompt padrão de assistente operacional.
           </p>
         </div>
 
         {/* Table selection */}
         <div className="space-y-3">
-          <Label>Tabelas do Agente *</Label>
+          <Label>Áreas do Agente *</Label>
           <p className="text-xs text-muted-foreground">
-            Selecione as tabelas que este agente poderá consultar.
+            Selecione as áreas que este agente poderá consultar.
           </p>
           <div className="rounded-2xl glass-card p-4 max-h-[300px] overflow-y-auto space-y-2">
             {availableTables.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                Nenhuma tabela disponível. Sincronize os metadados na aba Admin.
+                Nenhuma área disponível. Verifique os metadados na aba Admin.
               </p>
             ) : (
               availableTables.map(({ schema, table }) => {
@@ -165,10 +174,7 @@ export default function AgentCreate() {
                       checked={selectedTables.has(key)}
                       onCheckedChange={() => toggleTable(key)}
                     />
-                    <span className="text-sm">
-                      <span className="text-muted-foreground">{schema}.</span>
-                      <span className="font-medium">{table}</span>
-                    </span>
+                    <span className="text-sm font-medium">{toOperationAreaLabel(table)}</span>
                   </label>
                 );
               })

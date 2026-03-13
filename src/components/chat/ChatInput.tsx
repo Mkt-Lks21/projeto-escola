@@ -11,6 +11,7 @@ interface ChatInputProps {
 export default function ChatInput({ onSend, isLoading }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const prevIsLoadingRef = useRef(isLoading);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -18,6 +19,25 @@ export default function ChatInput({ onSend, isLoading }: ChatInputProps) {
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
     }
   }, [input]);
+
+  useEffect(() => {
+    const wasLoading = prevIsLoadingRef.current;
+    prevIsLoadingRef.current = isLoading;
+
+    if (!wasLoading || isLoading) return;
+
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement) {
+      if (activeElement.closest('[role="dialog"]')) return;
+
+      const tagName = activeElement.tagName;
+      const isAnotherTextField =
+        tagName === "INPUT" || tagName === "TEXTAREA" || activeElement.isContentEditable;
+      if (isAnotherTextField) return;
+    }
+
+    textareaRef.current?.focus({ preventScroll: true });
+  }, [isLoading]);
 
   const handleSend = () => {
     if (input.trim() && !isLoading) {
@@ -45,7 +65,7 @@ export default function ChatInput({ onSend, isLoading }: ChatInputProps) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Pergunte algo sobre seu banco de dados..."
+            placeholder="Pergunte algo sobre sua operação..."
             className="min-h-[48px] max-h-[200px] resize-none bg-transparent border-white/40 pr-14"
             disabled={isLoading}
           />
