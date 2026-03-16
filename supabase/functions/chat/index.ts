@@ -319,9 +319,9 @@ serve(async (req) => {
     const { data: settings, error: settingsError } = await supabase
       .from("llm_settings")
       .select("*")
-      .eq("user_id", authenticatedUser.id)
       .eq("is_active", true)
-      .single();
+      .limit(1)
+      .maybeSingle();
 
     if (settingsError || !settings) {
       return new Response(
@@ -797,8 +797,8 @@ USO OBRIGATORIO DA TOOL generate_insight:
 REGRA DE OURO:
 - Nunca exponha SQL ao usuario final em respostas comuns
 - Nunca retorne [AUTO_EXECUTE] fora do modo SQL explicito
-- Para saudacoes (como "ola", "boa tarde"), bate-papo basico ou perguntas isoladas que NAO precisem de consultas ao banco de dados, responda naturalmente em texto e NAO use a tool generate_chart nem generate_insight.`;
-- Nunca cite nomes de tabelas/colunas, schemas ou detalhes tecnicos ao usuario final`;
+- Para saudacoes (como "ola", "boa tarde"), bate-papo basico ou perguntas isoladas que NAO precisem de consultas ao banco de dados, responda naturalmente em texto e NAO use a tool generate_chart nem generate_insight.
+- Nunca cite nomes de tabelas / colunas, schemas ou detalhes tecnicos ao usuario final`;
 
   let output = baseInstructions;
 
@@ -806,10 +806,10 @@ REGRA DE OURO:
     output = `${output}
 
 REGRAS ADICIONAIS PARA PEDIDOS DE COMPARACAO:
-- Quando o usuario pedir comparacao explicita (ex: 2024 vs 2025), a SQL DEVE retornar ambas as series.
-- Formato preferencial: Long (periodo, serie, valor), por exemplo: trimestre, ano, total_vendas.
-- Formato wide tambem e aceito: periodo + uma coluna numerica por serie (ex: trimestre, vendas_2024, vendas_2025).
-- Para comparacoes trimestrais/anuais, agregue por periodo + serie e ordene de forma estavel.
+  - Quando o usuario pedir comparacao explicita(ex: 2024 vs 2025), a SQL DEVE retornar ambas as series.
+- Formato preferencial: Long(periodo, serie, valor), por exemplo: trimestre, ano, total_vendas.
+- Formato wide tambem e aceito: periodo + uma coluna numerica por serie(ex: trimestre, vendas_2024, vendas_2025).
+- Para comparacoes trimestrais / anuais, agregue por periodo + serie e ordene de forma estavel.
 - Quando fizer sentido, use COALESCE para evitar valores nulos nos agregados.
 - Evite consultas que retornem apenas uma serie quando a pergunta exigir comparacao.`;
   }
@@ -817,9 +817,9 @@ REGRAS ADICIONAIS PARA PEDIDOS DE COMPARACAO:
   if (isCombinedChartInsightRequest) {
     output = `${output}
 
-REGRAS PARA PEDIDO COMBINADO (GRAFICO + ANALISE):
-- Quando o usuario pedir grafico e analise na mesma pergunta, gere a SQL do grafico de forma que os dados sustentem analise textual.
-- Priorize metricas comparaveis por periodo e serie para permitir leitura executiva (ex: trimestre, ano, total_vendas).
+REGRAS PARA PEDIDO COMBINADO(GRAFICO + ANALISE):
+  - Quando o usuario pedir grafico e analise na mesma pergunta, gere a SQL do grafico de forma que os dados sustentem analise textual.
+- Priorize metricas comparaveis por periodo e serie para permitir leitura executiva(ex: trimestre, ano, total_vendas).
 - Evite SQL excessivamente granular quando o objetivo for comparacao e interpretacao de negocio.`;
   }
 
@@ -950,7 +950,7 @@ function buildInsightArgsFromChartRequest(userQuestion: string): InsightToolArgs
   const analysisScope: InsightScope = looksDirectQuestion ? "specific" : "broad";
   const focusText = (userQuestion || "").trim();
   const analysisFocus = focusText
-    ? `Analise do grafico: ${focusText.slice(0, 180)}`
+    ? `Analise do grafico: ${ focusText.slice(0, 180) }`
     : "Analise de negocio baseada no grafico";
 
   return {
@@ -1251,8 +1251,8 @@ async function tryForceToolCall(
       temperature: INSIGHT_TEMPERATURE,
     });
     return forcedResult;
-  } catch (error) {
-    console.warn(`Forced tool call failed for ${forceToolName}:`, error);
+  } catch (err: any) {
+    console.warn(`Forced tool call failed for ${forceToolName}: `, err);
   }
 
   return null;
@@ -1310,7 +1310,7 @@ async function callOpenAIInternal(
       console.warn("OpenAI rejected tools payload, retrying without tools.");
       return await callOpenAIInternal(apiKey, model, systemPrompt, messages, { ...options, withTools: false });
     }
-    throw new Error(`Erro OpenAI (${response.status}): ${extractProviderError(rawBody)}`);
+    throw new Error(`Erro OpenAI(${response.status}): ${extractProviderError(rawBody)}`);
   }
 
   const payload = safeJsonParse(rawBody) || {};
