@@ -13,46 +13,6 @@ const MAX_INSIGHT_ROWS = 200;
 const INSIGHT_TEMPERATURE = 0.4;
 const USAGE_SAFETY_MARGIN_TOKENS = 2000;
 
-const DEFAULT_ALLOWED_TABLES = new Set([
-  "public.atendimento",
-  "public.financeiro",
-  "public.movimento",
-  "public.produto_estoque",
-]);
-
-const FORBIDDEN_KEYWORDS = [
-  "INSERT",
-  "DELETE",
-  "UPDATE",
-  "DROP",
-  "TRUNCATE",
-  "ALTER",
-  "GRANT",
-  "REVOKE",
-  "EXEC",
-  "EXECUTE",
-  "CREATE",
-];
-
-const OPERATION_TABLE_ALLOWLIST = [
-  "atendimento",
-  "financeiro",
-  "movimento",
-  "produto_estoque",
-];
-
-const OPERATION_TABLE_ALLOWLIST_SET = new Set(OPERATION_TABLE_ALLOWLIST);
-const OPERATION_QUALIFIED_ALLOWLIST_SET = new Set(
-  OPERATION_TABLE_ALLOWLIST.map((table) => `public.${table}`),
-);
-
-const OPERATION_TABLE_LABELS: Record<string, string> = {
-  atendimento: "Atendimento",
-  financeiro: "Financeiro",
-  movimento: "Movimentações",
-  produto_estoque: "Estoque",
-};
-
 const CHART_TYPES = ["bar", "line", "pie", "scatter"] as const;
 const INSIGHT_SCOPES = ["broad", "specific"] as const;
 const TOOL_NAMES = ["generate_chart", "generate_insight"] as const;
@@ -472,197 +432,30 @@ serve(async (req) => {
     const lastUserMessage = getLastUserMessage(messages);
     const userIntent = detectUserIntent(lastUserMessage);
     const chartAndInsightRequested = detectChartAndInsightIntent(lastUserMessage);
-    let finalUserIntent = userIntent;
-    let finalChartAndInsightRequested = chartAndInsightRequested;
     let totalUsage = emptyUsage();
-    let responseToReturn: Response | null = null;
 
-    const swarmEnabled = isSwarmEnabled();
-    let swarmMetadata: Record<string, unknown> = { swarm_enabled: swarmEnabled };
+    const swarmResult = await runSwarmFlow({
+      req,
+      settings: activeSettings,
+      messages,
+      userMessage: lastUserMessage,
+      userIntent,
+      chartAndInsightRequested,
+      supabaseUrl,
+      supabaseServiceKey: supabaseKey,
+      sqlDebug: sqlDebugRequested,
+    });
 
-    if (swarmEnabled) {
-      try {
-        const swarmResult = await runSwarmFlow({
-          req,
-          settings: activeSettings,
-          messages,
-          userMessage: lastUserMessage,
-          userIntent,
-          chartAndInsightRequested,
-          supabaseUrl,
-          supabaseServiceKey: supabaseKey,
-          sqlDebug: sqlDebugRequested,
-        });
+    totalUsage = mergeUsage(totalUsage, swarmResult.usage);
+    const responseToReturn = swarmResult.response;
 
-        totalUsage = mergeUsage(totalUsage, swarmResult.usage);
-        responseToReturn = swarmResult.response;
-        swarmMetadata = {
-          ...swarmMetadata,
-          swarm_handled: true,
-          swarm_worker_count: swarmResult.selectedWorkers.length,
-          swarm_workers: swarmResult.selectedWorkers,
-        };
-      } catch (swarmError) {
-        if (swarmError instanceof SwarmFlowError) {
-          totalUsage = mergeUsage(totalUsage, swarmError.usage);
-        }
-        const fallbackReason = swarmError instanceof Error ? swarmError.message : "unknown";
-        console.warn("Swarm flow failed, falling back to legacy flow:", swarmError);
-        swarmMetadata = {
-          ...swarmMetadata,
-          swarm_handled: false,
-          swarm_fallback_to_legacy: true,
-          swarm_fallback_reason: fallbackReason,
-        };
-      }
-    }
-
-    if (!responseToReturn) {
-      const externalUrl = Deno.env.get("EXTERNAL_SUPABASE_URL");
-      const externalKey = Deno.env.get("EXTERNAL_SUPABASE_SERVICE_KEY");
-      console.log("[chat][legacy] data_source=external_supabase");
-
-      if (!externalUrl || !externalKey) {
-        return createJsonResponse(
-          req,
-          {
-            error:
-              "Banco externo nao configurado. Defina EXTERNAL_SUPABASE_URL e EXTERNAL_SUPABASE_SERVICE_KEY.",
-          },
-          400,
-        );
-      }
-
-      const externalSupabase = createClient(externalUrl, externalKey);
-      const effectiveAllowedTables = computeEffectiveAllowedQualifiedTables(agentContext);
-
-      let metadataContext = "";
-      try {
-        const { data: externalMetadata } = await externalSupabase.rpc("get_database_metadata");
-        let filteredData = (externalMetadata || []).filter((row: any) => row.schema_name === "public");
-
-        filteredData = filteredData.filter((row: any) =>
-          effectiveAllowedTables.has(
-            toQualifiedLower(
-              typeof row.schema_name === "string" ? row.schema_name : "public",
-              typeof row.table_name === "string" ? row.table_name : "",
-            ),
-          )
-        );
-
-        if (filteredData.length > 0) {
-          metadataContext =
-            `\n\nDicionario interno de dados (nao citar ao usuario):\n${formatMetadata(filteredData)}`;
-        }
-      } catch (metadataError) {
-        console.log("Could not fetch external metadata:", metadataError);
-      }
-
-      const targetDescription = "dados da operacao (atendimento, financeiro, movimentacoes e estoque)";
-      const behaviorPrompt = buildBehaviorPrompt(agentContext, targetDescription, effectiveAllowedTables);
-      const technicalInstructions = buildTechnicalInstructions(
-        userIntent,
-        lastUserMessage,
-        chartAndInsightRequested,
-        effectiveAllowedTables,
-      );
-      const systemPrompt = `${behaviorPrompt}\n${technicalInstructions}\n${metadataContext}`;
-
-      const llmOptions: LLMCallOptions = {
-        withTools: userIntent !== "explicit_sql",
-        temperature: userIntent === "insight" ? INSIGHT_TEMPERATURE : undefined,
-      };
-
-      const primaryResponse = await callProvider(activeSettings, systemPrompt, messages, llmOptions);
-      totalUsage = mergeUsage(totalUsage, primaryResponse.usage);
-      let llmResult = primaryResponse.result;
-
-      if (llmResult.type === "text" && (userIntent === "chart" || userIntent === "insight")) {
-        const forcedToolName: ToolName = userIntent === "chart" ? "generate_chart" : "generate_insight";
-        const forcedResult = await tryForceToolCall(activeSettings, systemPrompt, messages, forcedToolName);
-        if (forcedResult) {
-          totalUsage = mergeUsage(totalUsage, forcedResult.usage);
-          if (
-            forcedResult.result.type === "tool_call_chart" ||
-            forcedResult.result.type === "tool_call_insight"
-          ) {
-            llmResult = forcedResult.result;
-          }
-        }
-      }
-
-      if (llmResult.type === "tool_call_chart") {
-        const sqlDebugQuery = sqlDebugRequested ? llmResult.args.sql_query : undefined;
-        const queryData = await executeChartQuery(
-          externalSupabase,
-          llmResult.args.sql_query,
-          effectiveAllowedTables,
-        );
-        const pythonResponse = await generateChartFromPython(queryData, llmResult.args);
-        const pythonPayload =
-          sqlDebugQuery
-            ? { ...pythonResponse, sql_debug: sqlDebugQuery }
-            : pythonResponse;
-
-        if (chartAndInsightRequested) {
-          const insightArgs = buildInsightArgsFromChartRequest(lastUserMessage);
-          const insightSynthesis = await synthesizeInsightText(
-            activeSettings,
-            lastUserMessage,
-            insightArgs,
-            queryData,
-          );
-          totalUsage = mergeUsage(totalUsage, insightSynthesis.usage);
-
-          const chartInsightPayload: ChartInsightContentPayload = {
-            success: true,
-            row_count: queryData.length,
-            chart_payload: pythonPayload,
-            insight_text: insightSynthesis.text,
-            analysis_scope: insightArgs.analysis_scope,
-            analysis_focus: insightArgs.analysis_focus,
-            warnings: extractChartWarnings(pythonResponse),
-            sql_debug: sqlDebugQuery,
-          };
-
-          responseToReturn = createChartInsightSseResponse(req, chartInsightPayload);
-        } else {
-          responseToReturn = createChartSseResponse(req, pythonPayload);
-        }
-      } else if (llmResult.type === "tool_call_insight") {
-        const insightResult = await runInsightFlow(
-          activeSettings,
-          externalSupabase,
-          lastUserMessage,
-          llmResult.args,
-          effectiveAllowedTables,
-          sqlDebugRequested ? llmResult.args.sql_query : undefined,
-        );
-        totalUsage = mergeUsage(totalUsage, insightResult.usage);
-        responseToReturn = createInsightSseResponse(req, insightResult.payload);
-      } else {
-        let finalText = sanitizeUserFacingText(llmResult.text, userIntent === "explicit_sql");
-        if (userIntent === "explicit_sql" && containsSqlExecutionContent(finalText)) {
-          finalText = `${SQL_DEBUG_ALLOWED_TAG}\n${finalText}`;
-        }
-        responseToReturn = createTextSseResponse(req, finalText);
-      }
-
-      if (!swarmEnabled) {
-        swarmMetadata = {
-          ...swarmMetadata,
-          swarm_handled: false,
-          swarm_fallback_to_legacy: false,
-        };
-      }
-    }
-
-    if (!responseToReturn) {
-      responseToReturn = createTextSseResponse(
-        req,
-        "Nao consegui concluir a resposta neste momento. Tente novamente em alguns instantes.",
-      );
-    }
+    const swarmMetadata: Record<string, unknown> = {
+      swarm_enabled: true,
+      swarm_handled: true,
+      swarm_worker_count: swarmResult.selectedWorkers.length,
+      swarm_workers: swarmResult.selectedWorkers,
+      data_source: "delphi_proxy",
+    };
 
     const usageMissing = totalUsage.totalTokens <= 0;
     console.log("[billing] Final aggregated usage before record:", {
@@ -681,8 +474,8 @@ serve(async (req) => {
       model: activeSettings.model,
       usage: totalUsage,
       metadata: {
-        user_intent: finalUserIntent,
-        chart_and_insight_requested: finalChartAndInsightRequested,
+        user_intent: userIntent,
+        chart_and_insight_requested: chartAndInsightRequested,
         agent_id: agentId,
         usage_missing: usageMissing,
         ...swarmMetadata,
@@ -693,8 +486,16 @@ serve(async (req) => {
   } catch (error) {
     console.error("Chat error:", error);
 
-    if (error instanceof UserFacingError) {
-      return createTextSseResponse(req, error.message);
+    if (error instanceof SwarmFlowError) {
+      return createJsonResponse(
+        req,
+        {
+          code: "SWARM_FLOW_FAILED",
+          message: "Falha na orquestracao dos agentes.",
+          reason: error.message,
+        },
+        503,
+      );
     }
 
     if (error instanceof Error && error.message === "USER_NOT_LINKED_TO_ACES") {
@@ -745,213 +546,6 @@ serve(async (req) => {
     return createJsonResponse(req, { error: errorMessage }, 500);
   }
 });
-
-class UserFacingError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "UserFacingError";
-  }
-}
-
-function normalizeExternalSchemaName(raw: unknown): string | null {
-  if (typeof raw !== "string") {
-    return null;
-  }
-
-  if (raw.startsWith("external.")) {
-    return raw.replace(/^external\./, "");
-  }
-
-  return raw;
-}
-
-function toQualifiedLower(schemaName: string | null, tableName: string): string {
-  const schema = schemaName?.trim() ? schemaName.trim() : "public";
-  return `${schema}.${tableName}`.toLowerCase();
-}
-
-function computeEffectiveAllowedQualifiedTables(
-  agentContext: { tables: any[] } | null,
-): Set<string> {
-  const globalAllowed = new Set(OPERATION_QUALIFIED_ALLOWLIST_SET);
-
-  if (!agentContext || !Array.isArray(agentContext.tables) || agentContext.tables.length === 0) {
-    return globalAllowed;
-  }
-
-  const selected = new Set(
-    agentContext.tables
-      .map((table: any) => {
-        const schema = normalizeExternalSchemaName(table?.schema_name) || "public";
-        const tableName = typeof table?.table_name === "string" ? table.table_name : "";
-        if (!tableName) return null;
-        return toQualifiedLower(schema, tableName);
-      })
-      .filter((value: string | null): value is string => Boolean(value)),
-  );
-
-  const intersection = new Set(
-    [...globalAllowed].filter((qualified) => selected.has(qualified)),
-  );
-
-  return intersection.size > 0 ? intersection : globalAllowed;
-}
-
-function listAllowedTableNames(allowedQualified: Set<string>): string[] {
-  const allowed = new Set(
-    [...allowedQualified]
-      .map((qualified) => qualified.split(".")[1] || "")
-      .filter(Boolean),
-  );
-
-  return OPERATION_TABLE_ALLOWLIST.filter((table) => allowed.has(table));
-}
-
-function listAllowedAreaLabels(allowedQualified: Set<string>): string[] {
-  return listAllowedTableNames(allowedQualified).map(
-    (table) => OPERATION_TABLE_LABELS[table] || table,
-  );
-}
-
-function formatAllowedQualifiedList(allowedQualified: Set<string>): string {
-  const ordered = listAllowedTableNames(allowedQualified).map((table) => `public.${table}`);
-  return ordered.join(", ");
-}
-
-function buildAccessFallbackMessage(allowedQualified: Set<string>): string {
-  const labels = listAllowedAreaLabels(allowedQualified);
-  const areasText = labels.join(", ");
-  return `Hoje eu consigo te ajudar com ${areasText}. Sobre qual ponto da operação você quer ver números?`;
-}
-
-function buildBehaviorPrompt(
-  agentContext: { agent: any; tables: any[] } | null,
-  targetDescription: string,
-  allowedTables: Set<string>,
-): string {
-  const agentName =
-    agentContext?.agent?.name && typeof agentContext.agent.name === "string"
-      ? agentContext.agent.name
-      : "Arquem";
-
-  const customPrompt =
-    agentContext?.agent?.system_prompt && typeof agentContext.agent.system_prompt === "string"
-      ? agentContext.agent.system_prompt.trim()
-      : "";
-
-  const allowedAreasText = listAllowedAreaLabels(allowedTables).join(", ");
-  const allowedQualifiedText = formatAllowedQualifiedList(allowedTables);
-
-  const intro = `Voce e ${agentName}, um assistente do dono do negocio.
-
-Seu papel e ajudar com duvidas da operacao e tomada de decisao usando os dados disponiveis.
-Areas de dados disponiveis: ${allowedAreasText}.
-
-CONTEXTO: ${targetDescription}.`;
-
-  const customBlock = customPrompt
-    ? `\n\nPrompt personalizado do agente (do admin):\n${customPrompt}`
-    : "";
-
-  const fixedRules = `
-
-REGRAS FIXAS (NAO VIOLAR):
-- Nao fale sobre SQL, PostgreSQL, schema, tabelas, colunas ou detalhes tecnicos para o usuario final.
-- Responda com contexto de negocio e interpretacao (tendencias, alertas, oportunidades).
-- Sempre que fizer sentido, sugira proximos passos objetivos.
-- Se a pergunta exigir dados fora das areas disponiveis, diga que nao tem esses dados aqui e ofereca alternativas dentro das areas.
-- Se o usuario perguntar sobre "tabelas" ou "banco de dados", responda em termos de areas suportadas e redirecione para a operacao.
-
-Acesso interno (nao citar ao usuario):
-- Fontes permitidas: ${allowedQualifiedText}
-- Nunca consulte nada fora dessas fontes.`;
-
-  return `${intro}${customBlock}${fixedRules}`;
-}
-
-function buildTechnicalInstructions(
-  userIntent: UserIntent,
-  lastUserMessage: string,
-  chartAndInsightRequested: boolean,
-  allowedTables: Set<string>,
-): string {
-  const technicalSqlAllowed = userIntent === "explicit_sql";
-  const isComparativeChartRequest =
-    userIntent === "chart" && detectComparisonIntent(lastUserMessage);
-  const isCombinedChartInsightRequest =
-    userIntent === "chart" && chartAndInsightRequested;
-
-  const allowedQualifiedText = formatAllowedQualifiedList(allowedTables);
-  const accessBlock = `ACESSO A DADOS (fixo, nao violar):
-- Use APENAS estas fontes (nao citar ao usuario): ${allowedQualifiedText}`;
-
-  if (technicalSqlAllowed) {
-    return `
-${accessBlock}
-
-LIBERDADE PARA QUERIES DE LEITURA:
-- Use qualquer recurso SQL necessario para analise
-- Queries devem ser somente leitura
-- NUNCA coloque ponto e virgula (;) no fim da query
-
-MODO SQL EXPLICITO:
-- O usuario pediu SQL/query explicitamente
-- Retorne [AUTO_EXECUTE] seguido de bloco SQL quando precisar executar consulta no frontend
-- Mantenha foco tecnico
-- Nao usar generate_chart nem generate_insight neste modo`;
-  }
-
-  const baseInstructions = `
-${accessBlock}
-
-LIBERDADE PARA QUERIES DE LEITURA:
-- O BANCO DE DADOS E POSTGRESQL. USE APENAS FUNCOES E SINTAXE NATIVAS DO POSTGRESQL (ex: to_char, extract, date_trunc). NUNCA USE strftime OU SINTAXE SQLITE/MYSQL.
-- SINTAXE SQL OBRIGATORIA: Use operadores padrão (AND, OR, IS NULL). NUNCA traduza operadores para português (exemplo: não use "ou" no lugar de "OR", nem "e" no lugar de "AND").
-- Use qualquer recurso SQL necessario para analise
-- Queries devem ser somente leitura
-- NUNCA coloque ponto e virgula (;) no fim da query
-
-USO OBRIGATORIO DA TOOL generate_chart:
-- Se o usuario pedir grafico, visualizacao, plot, dashboard ou tendencia visual, use a tool generate_chart
-- Preencha sql_query, chart_type e chart_title
-- Nao retorne [AUTO_EXECUTE] nem bloco SQL quando optar por generate_chart
-
-USO OBRIGATORIO DA TOOL generate_insight:
-- Se o usuario pedir analise textual, tendencia, diagnostico ou resumo de desempenho sem pedir grafico, use a tool generate_insight
-- Preencha sql_query, analysis_scope e analysis_focus
-- Nao retorne [AUTO_EXECUTE], SQL bruto ou raw data para usuario final
-
-REGRA DE OURO:
-- Nunca exponha SQL ao usuario final em respostas comuns
-- Nunca retorne [AUTO_EXECUTE] fora do modo SQL explicito
-- Para saudacoes (como "ola", "boa tarde"), bate-papo basico ou perguntas isoladas que NAO precisem de consultas ao banco de dados, responda naturalmente em texto e NAO use a tool generate_chart nem generate_insight.
-- Nunca cite nomes de tabelas / colunas, schemas ou detalhes tecnicos ao usuario final`;
-
-  let output = baseInstructions;
-
-  if (isComparativeChartRequest) {
-    output = `${output}
-
-REGRAS ADICIONAIS PARA PEDIDOS DE COMPARACAO:
-  - Quando o usuario pedir comparacao explicita(ex: 2024 vs 2025), a SQL DEVE retornar ambas as series.
-- Formato preferencial: Long(periodo, serie, valor), por exemplo: trimestre, ano, total_vendas.
-- Formato wide tambem e aceito: periodo + uma coluna numerica por serie(ex: trimestre, vendas_2024, vendas_2025).
-- Para comparacoes trimestrais / anuais, agregue por periodo + serie e ordene de forma estavel.
-- Quando fizer sentido, use COALESCE para evitar valores nulos nos agregados.
-- Evite consultas que retornem apenas uma serie quando a pergunta exigir comparacao.`;
-  }
-
-  if (isCombinedChartInsightRequest) {
-    output = `${output}
-
-REGRAS PARA PEDIDO COMBINADO(GRAFICO + ANALISE):
-  - Quando o usuario pedir grafico e analise na mesma pergunta, gere a SQL do grafico de forma que os dados sustentem analise textual.
-- Priorize metricas comparaveis por periodo e serie para permitir leitura executiva(ex: trimestre, ano, total_vendas).
-- Evite SQL excessivamente granular quando o objetivo for comparacao e interpretacao de negocio.`;
-  }
-
-  return output;
-}
 
 function normalizeRequestMessages(messages: unknown): ChatMessage[] {
   if (!Array.isArray(messages)) {
@@ -1024,26 +618,6 @@ function detectUserIntent(lastUserMessage: string): UserIntent {
   }
 
   return "default";
-}
-
-function detectComparisonIntent(lastUserMessage: string): boolean {
-  const normalized = normalizeIntentText(lastUserMessage || "");
-  if (!normalized) {
-    return false;
-  }
-
-  const hasComparisonKeyword =
-    /\b(compar|comparacao|comparativo|vs|versus|contra|ano a ano|year over year|yoy)\b/.test(
-      normalized,
-    );
-
-  const years = normalized.match(/\b20\d{2}\b/g) || [];
-  const hasMultipleYears = new Set(years).size >= 2;
-  const hasPeriodSignal = /\b(trimestre|trimestral|mes|mensal|ano|anual|periodo)\b/.test(
-    normalized,
-  );
-
-  return hasComparisonKeyword || (hasMultipleYears && hasPeriodSignal);
 }
 
 function isSalesQuestion(lastUserMessage: string): boolean {
@@ -1232,19 +806,6 @@ function detectChartAndInsightIntent(lastUserMessage: string): boolean {
   return asksChart && asksInsight;
 }
 
-function isSwarmEnabled(): boolean {
-  const rawValue = Deno.env.get("SWARM_ENABLED");
-  if (!rawValue) {
-    return true;
-  }
-
-  const normalized = rawValue.trim().toLowerCase();
-  if (["0", "false", "no", "off"].includes(normalized)) {
-    return false;
-  }
-  return true;
-}
-
 async function invokeDelphiProxy(
   supabaseUrl: string,
   supabaseServiceKey: string,
@@ -1377,8 +938,13 @@ async function runSwarmFlow(params: {
     };
     console.log("[chat][swarm] data_source=delphi_proxy", {
       workers: supervisorResult.selectedWorkers,
-      tables: effectiveQueryPayload.tables,
-      rowspPage: effectiveQueryPayload.rowspPage ?? null,
+      query_payload: {
+        fields: effectiveQueryPayload.fields,
+        tables: effectiveQueryPayload.tables,
+        cond: effectiveQueryPayload.cond,
+        order: effectiveQueryPayload.order ?? null,
+        rowspPage: effectiveQueryPayload.rowspPage ?? null,
+      },
     });
 
     const initialGuardrail = applySwarmGuardrailToQueryPayload(effectiveQueryPayload, userMessage);
@@ -1427,6 +993,16 @@ async function runSwarmFlow(params: {
         };
         const retryGuardrail = applySwarmGuardrailToQueryPayload(effectiveQueryPayload, userMessage);
         effectiveQueryPayload = retryGuardrail.payload;
+        console.log("[chat][swarm][retry] data_source=delphi_proxy", {
+          workers: supervisorResult.selectedWorkers,
+          query_payload: {
+            fields: effectiveQueryPayload.fields,
+            tables: effectiveQueryPayload.tables,
+            cond: effectiveQueryPayload.cond,
+            order: effectiveQueryPayload.order ?? null,
+            rowspPage: effectiveQueryPayload.rowspPage ?? null,
+          },
+        });
         console.log(
           `[SWARM_GUARDRAIL] atendimentoTipoApplied=${retryGuardrail.atendimentoTipoApplied} reason=${retryGuardrail.reason}`,
         );
@@ -1818,33 +1394,6 @@ async function recordUsageEvent(
   throw new Error(`BILLING_RECORD_FAILED: ${message}`);
 }
 
-function formatMetadata(metadata: any[]): string {
-  const grouped: Record<string, Record<string, string[]>> = {};
-
-  for (const row of metadata) {
-    if (!grouped[row.schema_name]) {
-      grouped[row.schema_name] = {};
-    }
-    if (!grouped[row.schema_name][row.table_name]) {
-      grouped[row.schema_name][row.table_name] = [];
-    }
-    grouped[row.schema_name][row.table_name].push(
-      `${row.column_name} (${row.data_type}${row.is_nullable ? ", nullable" : ""})`,
-    );
-  }
-
-  let result = "";
-  for (const [schema, tables] of Object.entries(grouped)) {
-    if (schema !== "public") {
-      continue;
-    }
-    for (const [table, columns] of Object.entries(tables)) {
-      result += `\nFonte: ${table}\nCampos: ${columns.join(", ")}\n`;
-    }
-  }
-  return result;
-}
-
 async function callProvider(
   settings: ActiveSettings,
   systemPrompt: string,
@@ -1855,26 +1404,6 @@ async function callProvider(
     return await callOpenAI(settings.apiKey, settings.model, systemPrompt, messages, options);
   }
   return await callGemini(settings.apiKey, settings.model, systemPrompt, messages, options);
-}
-
-async function tryForceToolCall(
-  settings: ActiveSettings,
-  systemPrompt: string,
-  messages: ChatMessage[],
-  forceToolName: ToolName,
-): Promise<LLMProviderResponse | null> {
-  try {
-    const forcedResult = await callProvider(settings, systemPrompt, messages, {
-      withTools: true,
-      forceToolName,
-      temperature: INSIGHT_TEMPERATURE,
-    });
-    return forcedResult;
-  } catch (err: any) {
-    console.warn(`Forced tool call failed for ${forceToolName}: `, err);
-  }
-
-  return null;
 }
 
 async function callOpenAI(
@@ -2226,416 +1755,6 @@ function sanitizeSqlQuery(query: string): string {
   return sanitized;
 }
 
-function isReadOnlyQuery(query: string): boolean {
-  const upperQuery = query.toUpperCase().trim();
-
-  for (const keyword of FORBIDDEN_KEYWORDS) {
-    const regex = new RegExp(`\\b${keyword}\\b`, "i");
-    if (regex.test(upperQuery)) {
-      return false;
-    }
-  }
-
-  return /^\s*(SELECT|WITH)\b/i.test(query);
-}
-
-function referencesNonPublicSchema(query: string): boolean {
-  const normalized = query.toLowerCase();
-  const fromJoinPattern = /\b(?:from|join)\s+([a-z_][a-z0-9_]*)(?:\s*\.\s*([a-z_][a-z0-9_]*))?/gi;
-
-  for (const match of normalized.matchAll(fromJoinPattern)) {
-    const schema = match[2] ? match[1] : null;
-    if (schema && schema !== "public") {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-type TableReference = { schema: string | null; table: string };
-
-function normalizeSqlForTableScan(query: string): string {
-  return (query || "")
-    .replace(/--.*$/gm, " ")
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/'([^']|'')*'/g, " ")
-    .replace(/"/g, "")
-    .toLowerCase();
-}
-
-function extractTopLevelCteNames(query: string): Set<string> {
-  const normalized = normalizeSqlForTableScan(query).trimStart();
-  const result = new Set<string>();
-
-  if (!normalized.startsWith("with")) {
-    return result;
-  }
-
-  const skipWhitespace = (value: string, index: number) => {
-    let cursor = index;
-    while (cursor < value.length && /\s/.test(value[cursor])) {
-      cursor += 1;
-    }
-    return cursor;
-  };
-
-  const skipBalancedParens = (value: string, index: number) => {
-    let cursor = index;
-    if (value[cursor] !== "(") return cursor;
-
-    let depth = 0;
-    while (cursor < value.length) {
-      const ch = value[cursor];
-      if (ch === "(") depth += 1;
-      if (ch === ")") {
-        depth -= 1;
-        if (depth === 0) {
-          cursor += 1;
-          break;
-        }
-      }
-      cursor += 1;
-    }
-    return cursor;
-  };
-
-  const readIdentifier = (value: string, index: number) => {
-    const cursor = skipWhitespace(value, index);
-    const match = /^[a-z_][a-z0-9_]*/.exec(value.slice(cursor));
-    if (!match) return null;
-    return { name: match[0], nextIndex: cursor + match[0].length };
-  };
-
-  let cursor = 4; // "with".length
-  cursor = skipWhitespace(normalized, cursor);
-
-  if (/^recursive\b/.test(normalized.slice(cursor))) {
-    cursor += "recursive".length;
-    cursor = skipWhitespace(normalized, cursor);
-  }
-
-  while (cursor < normalized.length) {
-    const id = readIdentifier(normalized, cursor);
-    if (!id) {
-      break;
-    }
-
-    result.add(id.name);
-    cursor = skipWhitespace(normalized, id.nextIndex);
-
-    if (normalized[cursor] === "(") {
-      cursor = skipBalancedParens(normalized, cursor);
-      cursor = skipWhitespace(normalized, cursor);
-    }
-
-    if (!/^as\b/.test(normalized.slice(cursor))) {
-      break;
-    }
-
-    cursor += 2; // "as"
-    cursor = skipWhitespace(normalized, cursor);
-
-    if (normalized[cursor] === "(") {
-      cursor = skipBalancedParens(normalized, cursor);
-      cursor = skipWhitespace(normalized, cursor);
-    }
-
-    if (normalized[cursor] === ",") {
-      cursor += 1;
-      cursor = skipWhitespace(normalized, cursor);
-      continue;
-    }
-
-    break;
-  }
-
-  return result;
-}
-
-function extractReferencedTables(query: string): TableReference[] {
-  const normalized = normalizeSqlForTableScan(query);
-  const cteNames = extractTopLevelCteNames(query);
-
-  type Token = { type: "identifier" | "symbol"; value: string };
-  const tokens: Token[] = [];
-
-  let cursor = 0;
-  while (cursor < normalized.length) {
-    const ch = normalized[cursor];
-
-    if (/\s/.test(ch)) {
-      cursor += 1;
-      continue;
-    }
-
-    if (ch === "(" || ch === ")" || ch === "," || ch === ".") {
-      tokens.push({ type: "symbol", value: ch });
-      cursor += 1;
-      continue;
-    }
-
-    if (/[a-z_]/.test(ch)) {
-      let end = cursor + 1;
-      while (end < normalized.length && /[a-z0-9_]/.test(normalized[end])) {
-        end += 1;
-      }
-      tokens.push({ type: "identifier", value: normalized.slice(cursor, end) });
-      cursor = end;
-      continue;
-    }
-
-    cursor += 1;
-  }
-
-  const terminators = new Set([
-    "where",
-    "group",
-    "order",
-    "having",
-    "limit",
-    "union",
-    "intersect",
-    "except",
-    "window",
-    "fetch",
-    "offset",
-  ]);
-
-  const refs: TableReference[] = [];
-  const fromDepthStack: number[] = [];
-  let depth = 0;
-  let expectRelation = false;
-
-  const popFromDepths = () => {
-    while (fromDepthStack.length > 0 && fromDepthStack[fromDepthStack.length - 1] > depth) {
-      fromDepthStack.pop();
-    }
-  };
-
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-
-    if (token.type === "symbol") {
-      if (token.value === "(") {
-        if (expectRelation) {
-          expectRelation = false;
-        }
-        depth += 1;
-        continue;
-      }
-
-      if (token.value === ")") {
-        depth = Math.max(0, depth - 1);
-        popFromDepths();
-        continue;
-      }
-
-      if (
-        token.value === "," &&
-        fromDepthStack.length > 0 &&
-        fromDepthStack[fromDepthStack.length - 1] === depth
-      ) {
-        expectRelation = true;
-      }
-
-      continue;
-    }
-
-    const value = token.value;
-
-    if (value === "from") {
-      expectRelation = true;
-      fromDepthStack.push(depth);
-      continue;
-    }
-
-    if (value === "join") {
-      expectRelation = true;
-      continue;
-    }
-
-    if (terminators.has(value) && fromDepthStack.length > 0 && fromDepthStack[fromDepthStack.length - 1] === depth) {
-      fromDepthStack.pop();
-      expectRelation = false;
-      continue;
-    }
-
-    if (!expectRelation) {
-      continue;
-    }
-
-    if (value === "lateral") {
-      continue;
-    }
-
-    let schema: string | null = null;
-    let table = value;
-    let consumed = 0;
-
-    const dotToken = tokens[index + 1];
-    const nextId = tokens[index + 2];
-    if (dotToken?.type === "symbol" && dotToken.value === "." && nextId?.type === "identifier") {
-      schema = value;
-      table = nextId.value;
-      consumed = 2;
-    }
-
-    const afterToken = tokens[index + 1 + consumed];
-    if (afterToken?.type === "symbol" && afterToken.value === "(") {
-      expectRelation = false;
-      index += consumed;
-      continue;
-    }
-
-    if (!schema && cteNames.has(table)) {
-      expectRelation = false;
-      index += consumed;
-      continue;
-    }
-
-    refs.push({ schema, table });
-    expectRelation = false;
-    index += consumed;
-  }
-
-  return refs;
-}
-
-function assertQueryUsesOnlyAllowedTables(
-  query: string,
-  allowedQualifiedTables: Set<string>,
-): void {
-  const refs = extractReferencedTables(query);
-  for (const ref of refs) {
-    if (ref.schema && ref.schema !== "public") {
-      throw new UserFacingError(buildAccessFallbackMessage(allowedQualifiedTables));
-    }
-
-    const qualified = `${ref.schema || "public"}.${ref.table}`.toLowerCase();
-    if (!allowedQualifiedTables.has(qualified)) {
-      throw new UserFacingError(buildAccessFallbackMessage(allowedQualifiedTables));
-    }
-  }
-}
-
-async function executeReadOnlyQuery(
-  externalSupabase: any,
-  sqlQuery: string,
-  purpose: "grafico" | "insight",
-  allowedTables: Set<string>,
-): Promise<Record<string, unknown>[]> {
-  const sanitizedQuery = sanitizeSqlQuery(sqlQuery);
-  if (!sanitizedQuery) {
-    throw new UserFacingError("Nao consegui montar uma consulta para responder. Pode reformular a pergunta?");
-  }
-
-  if (!isReadOnlyQuery(sanitizedQuery)) {
-    throw new UserFacingError("Eu consigo apenas consultar dados (sem alterar nada). Vamos ajustar a pergunta?");
-  }
-
-  assertQueryUsesOnlyAllowedTables(sanitizedQuery, allowedTables);
-
-  const { data, error } = await externalSupabase.rpc("execute_safe_query", {
-    query_text: sanitizedQuery,
-  });
-
-  if (error) {
-    throw new Error(`Erro na execucao da query para ${purpose}: ${error.message}`);
-  }
-
-  return Array.isArray(data) ? data : [];
-}
-
-async function executeChartQuery(
-  externalSupabase: any,
-  sqlQuery: string,
-  allowedTables: Set<string>,
-): Promise<Record<string, unknown>[]> {
-  return await executeReadOnlyQuery(externalSupabase, sqlQuery, "grafico", allowedTables);
-}
-
-async function executeInsightQuery(
-  externalSupabase: any,
-  sqlQuery: string,
-  allowedTables: Set<string>,
-): Promise<Record<string, unknown>[]> {
-  return await executeReadOnlyQuery(externalSupabase, sqlQuery, "insight", allowedTables);
-}
-
-async function generateChartFromPython(
-  data: Record<string, unknown>[],
-  chartArgs: ChartToolArgs,
-): Promise<Record<string, unknown>> {
-  const configuredUrl = Deno.env.get("PYTHON_API_URL")?.trim();
-  const pythonApiUrl = configuredUrl || DEFAULT_PYTHON_API_URL;
-  const pythonApiToken = Deno.env.get("PYTHON_INTERNAL_API_TOKEN")?.trim();
-  const endpoint = `${pythonApiUrl.replace(/\/+$/, "")}/generate-chart`;
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  if (pythonApiToken) {
-    headers["X-Internal-Token"] = pythonApiToken;
-  }
-
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      data,
-      chart_intent: chartArgs.chart_type,
-      title: chartArgs.chart_title,
-    }),
-  });
-
-  const rawBody = await response.text();
-  const parsedBody = safeJsonParse(rawBody);
-
-  if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
-    throw new Error(`Resposta invalida da API Python (${response.status}).`);
-  }
-
-  if (!response.ok) {
-    console.warn(`Python API returned status ${response.status}:`, parsedBody);
-  }
-
-  return parsedBody as Record<string, unknown>;
-}
-
-async function runInsightFlow(
-  settings: ActiveSettings,
-  externalSupabase: any,
-  userQuestion: string,
-  insightArgs: InsightToolArgs,
-  allowedTables: Set<string>,
-  sqlDebugQuery?: string,
-): Promise<{ payload: InsightContentPayload; usage: TokenUsage }> {
-  const queryData = await executeInsightQuery(externalSupabase, insightArgs.sql_query, allowedTables);
-  const rows = queryData.slice(0, MAX_INSIGHT_ROWS);
-  const truncated = queryData.length > MAX_INSIGHT_ROWS;
-  if (truncated) {
-    console.log(`Insight rows truncated from ${queryData.length} to ${MAX_INSIGHT_ROWS}.`);
-  }
-
-  const insightSynthesis = await synthesizeInsightText(settings, userQuestion, insightArgs, queryData);
-
-  return {
-    payload: {
-      success: true,
-      analysis_scope: insightArgs.analysis_scope,
-      analysis_focus: insightArgs.analysis_focus,
-      row_count: queryData.length,
-      columns: inferColumns(rows),
-      rows,
-      insight_text: insightSynthesis.text,
-      sql_debug: sqlDebugQuery,
-    },
-    usage: insightSynthesis.usage,
-  };
-}
-
 async function synthesizeInsightText(
   settings: ActiveSettings,
   userQuestion: string,
@@ -2813,20 +1932,6 @@ function sanitizeUserFacingText(text: string, allowTechnicalSql: boolean): strin
   output = output.replace(/```(?:sql|postgres|postgresql)?[\s\S]*?```/gi, "");
   output = output.replace(/\n{3,}/g, "\n\n");
   return output.trim();
-}
-
-function containsSqlExecutionContent(text: string): boolean {
-  const output = text || "";
-  if (/\[AUTO_EXECUTE\]/i.test(output)) {
-    return true;
-  }
-  if (/```(?:sql|postgres|postgresql)?[\s\S]*?```/i.test(output)) {
-    return true;
-  }
-  if (/^\s*(SELECT|WITH)\b/i.test(output.trimStart())) {
-    return true;
-  }
-  return false;
 }
 
 function buildSqlDebugQuery(payload: {

@@ -60,6 +60,7 @@ REGRAS:
 - Nao invente workers fora da lista.
 - Sinais de vendas (venda, vendido, vendeu, vendedor, faturamento, faturado, pedidos, atendimento) devem incluir MarketingAgent (ATENDIMENTO).
 - Sinais financeiros (pagamento, recebimento, financeiro, parcelas, titulos) devem incluir FinanceiroAgent.
+- Para perguntas de faturamento por periodo (ex: "quanto foi vendido em outubro de 2025"), priorize MarketingAgent e FinanceiroAgent juntos.
 - Produtos/itens/grupos => ProdutosAgent. Estoque/movimentacao => EstoqueAgent. Caixa/banco => CaixaBancosAgent.
 
 Retorne APENAS JSON valido no formato:

@@ -118,6 +118,8 @@ REGRAS ESTRITAS:
 12. Para perguntas de vendas ou vendedor, priorize ATENDIMENTO e use CLIE_ID_VENDEDOR para relacionar com CLIENTE.
 13. Para tabelas usadas na query que tiverem coluna sufixo _ID_DEL, aplique filtro de ativo com IS NULL.
 14. Em ATENDIMENTO, exclua orcamentos por padrao com ATEN_STTIPO <> 'O', exceto quando o usuario pedir orcamento explicitamente.
+15. Para perguntas de faturamento por periodo (ex: "quanto foi vendido em outubro de 2025"), priorize consulta agregada com SUM no periodo solicitado e retorne apenas o necessario para responder o valor.
+16. Quando a pergunta for de total vendido em um periodo unico, evite granularidade por cliente/produto; retorne uma unica linha agregada com alias semantico (ex: total_vendido).
 
 Retorne APENAS um objeto JSON.`;
 }
