@@ -1,5 +1,4 @@
 BEGIN;
-
 CREATE OR REPLACE FUNCTION public.billing_record_usage(
   p_user_id uuid,
   p_conversation_id uuid,
@@ -161,5 +160,4 @@ BEGIN
   LIMIT 1;
 END;
 $$;
-
 COMMIT;

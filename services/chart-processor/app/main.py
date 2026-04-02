@@ -99,7 +99,15 @@ async def generate_chart(
             details={"max_rows": MAX_ROWS, "received_rows": row_count},
         )
 
-    df = pd.DataFrame(payload.data)
+    normalized_rows, normalized_metadata = _normalize_year_month_sales_shape(payload.data)
+    if normalized_metadata["applied"]:
+        logger.info(
+            "chart_data_normalized mode=year_month_to_period metric=%s rows=%s",
+            normalized_metadata["metric"],
+            len(normalized_rows),
+        )
+
+    df = pd.DataFrame(normalized_rows)
     if df.empty or len(df.columns) == 0:
         raise ApiError(
             status_code=400,
@@ -108,6 +116,10 @@ async def generate_chart(
         )
 
     inference = infer_columns(df, payload.chart_intent)
+    if normalized_metadata["applied"]:
+        inference.warnings.append(
+            f"Normalized year/month dataset into Periodo + {normalized_metadata['metric']}."
+        )
     plotly_figure, selected_columns = build_plotly_figure(df, inference, payload.title)
 
     elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
@@ -146,3 +158,86 @@ def _log_generation_metadata(
     }
     logger.info("chart_generated %s", metadata)
 
+
+def _find_case_insensitive_key(row: dict[str, Any], target: str) -> str | None:
+    lower_target = target.lower()
+    for key in row.keys():
+        if key.lower() == lower_target:
+            return key
+    return None
+
+
+def _to_int(value: Any) -> int | None:
+    try:
+        parsed = int(float(value))
+        return parsed
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        normalized = value.replace(".", "").replace(",", ".").strip()
+        try:
+            return float(normalized)
+        except ValueError:
+            return None
+    return None
+
+
+def _choose_metric_key(rows: list[dict[str, Any]], excluded_keys: set[str]) -> str | None:
+    if not rows:
+        return None
+    sample = rows[0]
+    candidates = [
+        key for key in sample.keys() if key.lower() not in excluded_keys and _to_float(sample[key]) is not None
+    ]
+    if not candidates:
+        return None
+    preferred = next(
+        (
+            key
+            for key in candidates
+            if any(token in key.lower() for token in ["total", "venda", "valor", "receita", "fatur"])
+        ),
+        None,
+    )
+    return preferred or candidates[0]
+
+
+def _normalize_year_month_sales_shape(
+    rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    metadata: dict[str, Any] = {"applied": False, "metric": None}
+    if not rows:
+        return rows, metadata
+
+    sample = rows[0]
+    year_key = _find_case_insensitive_key(sample, "Ano")
+    month_key = _find_case_insensitive_key(sample, "Mes")
+    if not year_key or not month_key:
+        return rows, metadata
+
+    metric_key = _choose_metric_key(rows, {year_key.lower(), month_key.lower()})
+    if not metric_key:
+        return rows, metadata
+
+    transformed: list[dict[str, Any]] = []
+    for row in rows:
+        year = _to_int(row.get(year_key))
+        month = _to_int(row.get(month_key))
+        metric_value = _to_float(row.get(metric_key))
+        if year is None or month is None or metric_value is None or month < 1 or month > 12:
+            return rows, metadata
+        transformed.append(
+            {
+                "Periodo": f"{year}-{month:02d}",
+                metric_key: metric_value,
+            }
+        )
+
+    metadata["applied"] = True
+    metadata["metric"] = metric_key
+    return transformed, metadata

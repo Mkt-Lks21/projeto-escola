@@ -45,6 +45,35 @@ describe("Route guards", () => {
     expect(screen.getByText("AUTH PAGE")).toBeInTheDocument();
   });
 
+  it("shows loading state while auth is hydrating", () => {
+    mockUseAuth.mockReturnValue({
+      session: null,
+      user: null,
+      isAuthLoading: true,
+      signIn: vi.fn(),
+      signUp: vi.fn(),
+      signOut: vi.fn(),
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <Routes>
+          <Route
+            path="/chat"
+            element={
+              <ProtectedRoute>
+                <div>CHAT PAGE</div>
+              </ProtectedRoute>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText(/Carregando sessao/i)).toBeInTheDocument();
+    expect(screen.queryByText("CHAT PAGE")).not.toBeInTheDocument();
+  });
+
   it("allows authenticated users in protected route", () => {
     mockUseAuth.mockReturnValue({
       session: { access_token: "token" } as never,

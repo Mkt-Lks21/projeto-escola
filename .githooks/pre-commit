@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v detect-secrets >/dev/null 2>&1; then
+  echo "detect-secrets não encontrado. Instale com: pip install detect-secrets" >&2
+  exit 1
+fi
+
+if [[ ! -f ".secrets.baseline" ]]; then
+  echo ".secrets.baseline não encontrado. Gere com: detect-secrets scan > .secrets.baseline" >&2
+  exit 1
+fi
+
+STAGED_FILES="$(git diff --cached --name-only --diff-filter=ACMRT)"
+if [[ -z "${STAGED_FILES}" ]]; then
+  exit 0
+fi
+
+echo "${STAGED_FILES}" | tr '\n' '\0' | xargs -0 detect-secrets-hook --baseline .secrets.baseline

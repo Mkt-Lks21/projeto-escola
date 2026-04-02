@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Database, MessageSquare, Bot, Settings } from "lucide-react";
+import { Database, MessageSquare, Bot } from "lucide-react";
 import { useAgents } from "@/hooks/useAgents";
 import { useChat } from "@/hooks/useChat";
 import AgentCard from "@/components/home/AgentCard";
@@ -54,19 +54,12 @@ export default function Home() {
         <header className="hidden md:flex mx-4 mt-4 items-center justify-between px-6 py-4 rounded-2xl glass-panel">
           <div className="flex items-center gap-2">
             <Database className="w-6 h-6 text-primary" />
-            <span className="font-semibold text-lg">Rb Analytics</span>
+            <span className="font-semibold text-lg">RB Analytics</span>
           </div>
-          <Link
-            to="/admin"
-            className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <Settings className="w-4 h-4" />
-            Configuracoes
-          </Link>
         </header>
 
         <div className="flex-1 flex flex-col items-center px-4 md:px-6 py-8 md:py-12">
-          <h1 className="text-3xl font-bold mb-2">Bem-vindo ao Rb Analytics</h1>
+          <h1 className="text-3xl font-bold mb-2">Bem-vindo ao RB Analytics</h1>
           <p className="text-muted-foreground mb-10">
             Converse sobre sua operação ou crie agentes especialistas.
           </p>

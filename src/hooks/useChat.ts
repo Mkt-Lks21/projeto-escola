@@ -109,7 +109,7 @@ export function useChat(agentId?: string, initialConversationId?: string) {
     }
   }, [agentId]);
 
-  const sendMessage = useCallback(async (content: string) => {
+  const sendMessage = useCallback(async (content: string, options?: { sqlDebug?: boolean }) => {
     if (!content.trim()) return;
 
     setIsLoading(true);
@@ -140,19 +140,27 @@ export function useChat(agentId?: string, initialConversationId?: string) {
         { role: "user", content },
       ];
 
-      const response = await sendChatMessage(apiMessages, conversationId, agentId);
+      const response = await sendChatMessage(apiMessages, conversationId, agentId, options?.sqlDebug);
 
       if (!response.ok) {
         const error: ChatUsageError = await response.json().catch(() => ({}));
 
-        if (error.code === "USAGE_LIMIT_REACHED") {
+        if (response.status === 401) {
+          throw new Error(error.message || "Sessao expirada. Faca login novamente.");
+        }
+
+        if (response.status === 429 || error.code === "USAGE_LIMIT_REACHED") {
           const percentage = typeof error.usage?.percent === "number"
             ? `${error.usage.percent.toFixed(2)}%`
             : "100%";
           throw new Error(error.message || `Seu limite mensal foi atingido (${percentage}).`);
         }
 
-        if (error.code === "USER_NOT_LINKED_TO_ACES") {
+        if (response.status === 403 && error.code === "PROFILE_NOT_FOUND") {
+          throw new Error(error.message || "Perfil de faturamento nao encontrado.");
+        }
+
+        if (response.status === 403 && error.code === "USER_NOT_LINKED_TO_ACES") {
           throw new Error(error.message || "Seu usuario nao esta vinculado a uma empresa.");
         }
 

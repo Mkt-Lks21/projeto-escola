@@ -1,17 +1,9 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
-
-const sseHeaders = {
-  ...corsHeaders,
-  "Content-Type": "text/event-stream",
-  "Cache-Control": "no-cache",
-  Connection: "keep-alive",
-};
+import { routeToSpecialist } from "./supervisor.ts";
+import { generateSqlQuery } from "./queryGenerator.ts";
+import { resolveSchemas } from "./dictionaries/index.ts";
+import { createCorsHeaders, enforceCors, getRequestId, rateLimitByUser } from "../_shared/security.ts";
 
 const DEFAULT_PYTHON_API_URL = "https://arquem-python-api.onrender.com";
 const SQL_DEBUG_ALLOWED_TAG = "[SQL_DEBUG_ALLOWED]";
@@ -90,6 +82,7 @@ type InsightContentPayload = {
   columns: string[];
   rows: Record<string, unknown>[];
   insight_text: string;
+  sql_debug?: string;
 };
 
 type ChartInsightContentPayload = {
@@ -100,6 +93,7 @@ type ChartInsightContentPayload = {
   analysis_scope: InsightScope;
   analysis_focus: string;
   warnings: string[];
+  sql_debug?: string;
 };
 
 type ChatMessage = {
@@ -155,6 +149,54 @@ type BillingUsageSnapshot = {
   remaining_tokens: number;
   remaining_credits: number;
 };
+
+type DelphiProxyPayload = {
+  fields: string;
+  tables: string;
+  cond: string;
+  order?: string;
+  rowspPage?: number;
+  pageNumber?: number;
+  empresa?: string;
+};
+
+type DelphiProxyResult = {
+  success: boolean;
+  data: Record<string, unknown>[];
+  rowCount: number;
+  pagination?: {
+    pageNumber: number;
+    totalPages: number;
+    totalRec: number;
+  };
+  error?: string;
+};
+
+type SwarmFlowResult = {
+  response: Response;
+  usage: TokenUsage;
+  selectedWorkers: string[];
+};
+
+type SwarmQueryPayload = {
+  fields: string;
+  tables: string;
+  cond: string;
+  order?: string;
+  rowspPage?: number;
+  chart_type?: "bar" | "line" | "pie" | "scatter";
+  chart_title?: string;
+};
+
+class SwarmFlowError extends Error {
+  usage: TokenUsage;
+
+  constructor(message: string, usage: TokenUsage) {
+    super(message);
+    this.name = "SwarmFlowError";
+    this.usage = usage;
+  }
+}
 
 const OPENAI_TOOLS = [
   {
@@ -269,18 +311,25 @@ const GEMINI_TOOLS = [
 ];
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+  const corsResponse = enforceCors(req);
+  if (corsResponse) return corsResponse;
+
+  if (req.method !== "POST") {
+    return createJsonResponse(req, { error: "Metodo nao permitido. Use POST." }, 405);
   }
 
   try {
+    const requestId = getRequestId(req);
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    // service_role is restricted to server-side execution and privileged RPC calls.
+    // Never expose this key to frontend clients.
 
     if (!supabaseUrl || !supabaseKey) {
-      return new Response(
-        JSON.stringify({ error: "Segredos SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY sao obrigatorios." }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      return createJsonResponse(
+        req,
+        { error: "Segredos SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY sao obrigatorios." },
+        500,
       );
     }
 
@@ -288,9 +337,20 @@ serve(async (req) => {
     const authenticatedUser = await authenticateRequestUser(req, supabase);
 
     if (!authenticatedUser) {
-      return new Response(
-        JSON.stringify({ error: "Missing or invalid authorization token." }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      return createJsonResponse(
+        req,
+        { error: "Missing or invalid authorization token.", request_id: requestId },
+        401,
+        { "x-request-id": requestId },
+      );
+    }
+    const rateLimit = await rateLimitByUser(authenticatedUser.id, "chat");
+    if (!rateLimit.allowed) {
+      return createJsonResponse(
+        req,
+        { error: "Rate limit excedido.", reset_at: rateLimit.resetAtEpochMs, request_id: requestId },
+        429,
+        { "x-request-id": requestId },
       );
     }
 
@@ -298,6 +358,7 @@ serve(async (req) => {
     const messages = normalizeRequestMessages(body?.messages);
     const agentId = typeof body?.agentId === "string" ? body.agentId : null;
     const conversationId = typeof body?.conversationId === "string" ? body.conversationId : null;
+    const sqlDebugRequested = toBooleanFlag(body?.sqlDebug);
     const interactionId = crypto.randomUUID();
 
     if (conversationId) {
@@ -310,6 +371,7 @@ serve(async (req) => {
 
       if (!conversation) {
         return createJsonResponse(
+          req,
           { error: "Conversa nao encontrada para este usuario." },
           404,
         );
@@ -324,18 +386,12 @@ serve(async (req) => {
       .maybeSingle();
 
     if (settingsError || !settings) {
-      return new Response(
-        JSON.stringify({ error: "Configure suas credenciais de LLM na aba Admin primeiro." }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+      return createJsonResponse(req, { error: "Configure suas credenciais de LLM na aba Admin primeiro." }, 400);
     }
 
     const provider = normalizeProvider(settings.provider);
     if (!provider) {
-      return new Response(
-        JSON.stringify({ error: `Provider nao suportado: ${settings.provider}` }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+      return createJsonResponse(req, { error: `Provider nao suportado: ${settings.provider}` }, 400);
     }
 
     const activeSettings: ActiveSettings = {
@@ -347,6 +403,7 @@ serve(async (req) => {
     const billingSnapshot = await getBillingUsageSnapshot(supabase, authenticatedUser.id);
     if (!billingSnapshot) {
       return createJsonResponse(
+        req,
         { code: "PROFILE_NOT_FOUND", message: "Perfil de billing nao encontrado para o usuario." },
         403,
       );
@@ -354,6 +411,7 @@ serve(async (req) => {
 
     if (billingSnapshot.aces_id === null) {
       return createJsonResponse(
+        req,
         {
           code: "USER_NOT_LINKED_TO_ACES",
           message: "Seu usuario nao esta vinculado a nenhuma empresa (aces_id).",
@@ -364,6 +422,7 @@ serve(async (req) => {
 
     if (billingSnapshot.remaining_tokens <= USAGE_SAFETY_MARGIN_TOKENS) {
       return createJsonResponse(
+        req,
         {
           code: "USAGE_LIMIT_REACHED",
           message: "Seu limite mensal foi atingido. Aguarde o proximo reset para continuar.",
@@ -380,6 +439,7 @@ serve(async (req) => {
     );
     if (!pricingExists) {
       return createJsonResponse(
+        req,
         {
           code: "MODEL_PRICING_NOT_FOUND",
           message: `Nao ha precificacao ativa para ${activeSettings.provider}:${activeSettings.model}.`,
@@ -398,10 +458,7 @@ serve(async (req) => {
         .single();
 
       if (!agent) {
-        return new Response(
-          JSON.stringify({ error: "Agente nao encontrado para este usuario." }),
-          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-        );
+        return createJsonResponse(req, { error: "Agente nao encontrado para este usuario." }, 404);
       }
 
       const { data: agentTables } = await supabase
@@ -412,131 +469,199 @@ serve(async (req) => {
       agentContext = { agent, tables: agentTables || [] };
     }
 
-    const externalUrl = Deno.env.get("EXTERNAL_SUPABASE_URL");
-    const externalKey = Deno.env.get("EXTERNAL_SUPABASE_SERVICE_KEY");
-
-    if (!externalUrl || !externalKey) {
-      return new Response(
-        JSON.stringify({
-          error:
-            "Banco externo nao configurado. Defina EXTERNAL_SUPABASE_URL e EXTERNAL_SUPABASE_SERVICE_KEY.",
-        }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-
-    const externalSupabase = createClient(externalUrl, externalKey);
     const lastUserMessage = getLastUserMessage(messages);
     const userIntent = detectUserIntent(lastUserMessage);
     const chartAndInsightRequested = detectChartAndInsightIntent(lastUserMessage);
-    const effectiveAllowedTables = computeEffectiveAllowedQualifiedTables(agentContext);
+    let finalUserIntent = userIntent;
+    let finalChartAndInsightRequested = chartAndInsightRequested;
+    let totalUsage = emptyUsage();
+    let responseToReturn: Response | null = null;
 
-    let metadataContext = "";
-    try {
-      const { data: externalMetadata } = await externalSupabase.rpc("get_database_metadata");
-      let filteredData = (externalMetadata || []).filter((row: any) => row.schema_name === "public");
+    const swarmEnabled = isSwarmEnabled();
+    let swarmMetadata: Record<string, unknown> = { swarm_enabled: swarmEnabled };
 
-      filteredData = filteredData.filter((row: any) =>
-        effectiveAllowedTables.has(
-          toQualifiedLower(
-            typeof row.schema_name === "string" ? row.schema_name : "public",
-            typeof row.table_name === "string" ? row.table_name : "",
-          ),
-        )
-      );
+    if (swarmEnabled) {
+      try {
+        const swarmResult = await runSwarmFlow({
+          req,
+          settings: activeSettings,
+          messages,
+          userMessage: lastUserMessage,
+          userIntent,
+          chartAndInsightRequested,
+          supabaseUrl,
+          supabaseServiceKey: supabaseKey,
+          sqlDebug: sqlDebugRequested,
+        });
 
-      if (filteredData.length > 0) {
-        metadataContext =
-          `\n\nDicionario interno de dados (nao citar ao usuario):\n${formatMetadata(filteredData)}`;
+        totalUsage = mergeUsage(totalUsage, swarmResult.usage);
+        responseToReturn = swarmResult.response;
+        swarmMetadata = {
+          ...swarmMetadata,
+          swarm_handled: true,
+          swarm_worker_count: swarmResult.selectedWorkers.length,
+          swarm_workers: swarmResult.selectedWorkers,
+        };
+      } catch (swarmError) {
+        if (swarmError instanceof SwarmFlowError) {
+          totalUsage = mergeUsage(totalUsage, swarmError.usage);
+        }
+        const fallbackReason = swarmError instanceof Error ? swarmError.message : "unknown";
+        console.warn("Swarm flow failed, falling back to legacy flow:", swarmError);
+        swarmMetadata = {
+          ...swarmMetadata,
+          swarm_handled: false,
+          swarm_fallback_to_legacy: true,
+          swarm_fallback_reason: fallbackReason,
+        };
       }
-    } catch (metadataError) {
-      console.log("Could not fetch external metadata:", metadataError);
     }
 
-    const targetDescription = "dados da operacao (atendimento, financeiro, movimentacoes e estoque)";
-    const behaviorPrompt = buildBehaviorPrompt(agentContext, targetDescription, effectiveAllowedTables);
-    const technicalInstructions = buildTechnicalInstructions(
-      userIntent,
-      lastUserMessage,
-      chartAndInsightRequested,
-      effectiveAllowedTables,
-    );
-    const systemPrompt = `${behaviorPrompt}\n${technicalInstructions}\n${metadataContext}`;
+    if (!responseToReturn) {
+      const externalUrl = Deno.env.get("EXTERNAL_SUPABASE_URL");
+      const externalKey = Deno.env.get("EXTERNAL_SUPABASE_SERVICE_KEY");
+      console.log("[chat][legacy] data_source=external_supabase");
 
-    const llmOptions: LLMCallOptions = {
-      withTools: userIntent !== "explicit_sql",
-      temperature: userIntent === "insight" ? INSIGHT_TEMPERATURE : undefined,
-    };
+      if (!externalUrl || !externalKey) {
+        return createJsonResponse(
+          req,
+          {
+            error:
+              "Banco externo nao configurado. Defina EXTERNAL_SUPABASE_URL e EXTERNAL_SUPABASE_SERVICE_KEY.",
+          },
+          400,
+        );
+      }
 
-    let totalUsage = emptyUsage();
-    const primaryResponse = await callProvider(activeSettings, systemPrompt, messages, llmOptions);
-    totalUsage = mergeUsage(totalUsage, primaryResponse.usage);
-    let llmResult = primaryResponse.result;
+      const externalSupabase = createClient(externalUrl, externalKey);
+      const effectiveAllowedTables = computeEffectiveAllowedQualifiedTables(agentContext);
 
-    if (llmResult.type === "text" && (userIntent === "chart" || userIntent === "insight")) {
-      const forcedToolName: ToolName = userIntent === "chart" ? "generate_chart" : "generate_insight";
-      const forcedResult = await tryForceToolCall(activeSettings, systemPrompt, messages, forcedToolName);
-      if (forcedResult) {
-        totalUsage = mergeUsage(totalUsage, forcedResult.usage);
-        if (
-          forcedResult.result.type === "tool_call_chart" ||
-          forcedResult.result.type === "tool_call_insight"
-        ) {
-          llmResult = forcedResult.result;
+      let metadataContext = "";
+      try {
+        const { data: externalMetadata } = await externalSupabase.rpc("get_database_metadata");
+        let filteredData = (externalMetadata || []).filter((row: any) => row.schema_name === "public");
+
+        filteredData = filteredData.filter((row: any) =>
+          effectiveAllowedTables.has(
+            toQualifiedLower(
+              typeof row.schema_name === "string" ? row.schema_name : "public",
+              typeof row.table_name === "string" ? row.table_name : "",
+            ),
+          )
+        );
+
+        if (filteredData.length > 0) {
+          metadataContext =
+            `\n\nDicionario interno de dados (nao citar ao usuario):\n${formatMetadata(filteredData)}`;
+        }
+      } catch (metadataError) {
+        console.log("Could not fetch external metadata:", metadataError);
+      }
+
+      const targetDescription = "dados da operacao (atendimento, financeiro, movimentacoes e estoque)";
+      const behaviorPrompt = buildBehaviorPrompt(agentContext, targetDescription, effectiveAllowedTables);
+      const technicalInstructions = buildTechnicalInstructions(
+        userIntent,
+        lastUserMessage,
+        chartAndInsightRequested,
+        effectiveAllowedTables,
+      );
+      const systemPrompt = `${behaviorPrompt}\n${technicalInstructions}\n${metadataContext}`;
+
+      const llmOptions: LLMCallOptions = {
+        withTools: userIntent !== "explicit_sql",
+        temperature: userIntent === "insight" ? INSIGHT_TEMPERATURE : undefined,
+      };
+
+      const primaryResponse = await callProvider(activeSettings, systemPrompt, messages, llmOptions);
+      totalUsage = mergeUsage(totalUsage, primaryResponse.usage);
+      let llmResult = primaryResponse.result;
+
+      if (llmResult.type === "text" && (userIntent === "chart" || userIntent === "insight")) {
+        const forcedToolName: ToolName = userIntent === "chart" ? "generate_chart" : "generate_insight";
+        const forcedResult = await tryForceToolCall(activeSettings, systemPrompt, messages, forcedToolName);
+        if (forcedResult) {
+          totalUsage = mergeUsage(totalUsage, forcedResult.usage);
+          if (
+            forcedResult.result.type === "tool_call_chart" ||
+            forcedResult.result.type === "tool_call_insight"
+          ) {
+            llmResult = forcedResult.result;
+          }
         }
       }
+
+      if (llmResult.type === "tool_call_chart") {
+        const sqlDebugQuery = sqlDebugRequested ? llmResult.args.sql_query : undefined;
+        const queryData = await executeChartQuery(
+          externalSupabase,
+          llmResult.args.sql_query,
+          effectiveAllowedTables,
+        );
+        const pythonResponse = await generateChartFromPython(queryData, llmResult.args);
+        const pythonPayload =
+          sqlDebugQuery
+            ? { ...pythonResponse, sql_debug: sqlDebugQuery }
+            : pythonResponse;
+
+        if (chartAndInsightRequested) {
+          const insightArgs = buildInsightArgsFromChartRequest(lastUserMessage);
+          const insightSynthesis = await synthesizeInsightText(
+            activeSettings,
+            lastUserMessage,
+            insightArgs,
+            queryData,
+          );
+          totalUsage = mergeUsage(totalUsage, insightSynthesis.usage);
+
+          const chartInsightPayload: ChartInsightContentPayload = {
+            success: true,
+            row_count: queryData.length,
+            chart_payload: pythonPayload,
+            insight_text: insightSynthesis.text,
+            analysis_scope: insightArgs.analysis_scope,
+            analysis_focus: insightArgs.analysis_focus,
+            warnings: extractChartWarnings(pythonResponse),
+            sql_debug: sqlDebugQuery,
+          };
+
+          responseToReturn = createChartInsightSseResponse(req, chartInsightPayload);
+        } else {
+          responseToReturn = createChartSseResponse(req, pythonPayload);
+        }
+      } else if (llmResult.type === "tool_call_insight") {
+        const insightResult = await runInsightFlow(
+          activeSettings,
+          externalSupabase,
+          lastUserMessage,
+          llmResult.args,
+          effectiveAllowedTables,
+          sqlDebugRequested ? llmResult.args.sql_query : undefined,
+        );
+        totalUsage = mergeUsage(totalUsage, insightResult.usage);
+        responseToReturn = createInsightSseResponse(req, insightResult.payload);
+      } else {
+        let finalText = sanitizeUserFacingText(llmResult.text, userIntent === "explicit_sql");
+        if (userIntent === "explicit_sql" && containsSqlExecutionContent(finalText)) {
+          finalText = `${SQL_DEBUG_ALLOWED_TAG}\n${finalText}`;
+        }
+        responseToReturn = createTextSseResponse(req, finalText);
+      }
+
+      if (!swarmEnabled) {
+        swarmMetadata = {
+          ...swarmMetadata,
+          swarm_handled: false,
+          swarm_fallback_to_legacy: false,
+        };
+      }
     }
 
-    let responseToReturn: Response;
-
-    if (llmResult.type === "tool_call_chart") {
-      const queryData = await executeChartQuery(
-        externalSupabase,
-        llmResult.args.sql_query,
-        effectiveAllowedTables,
+    if (!responseToReturn) {
+      responseToReturn = createTextSseResponse(
+        req,
+        "Nao consegui concluir a resposta neste momento. Tente novamente em alguns instantes.",
       );
-      const pythonResponse = await generateChartFromPython(queryData, llmResult.args);
-
-      if (chartAndInsightRequested) {
-        const insightArgs = buildInsightArgsFromChartRequest(lastUserMessage);
-        const insightSynthesis = await synthesizeInsightText(
-          activeSettings,
-          lastUserMessage,
-          insightArgs,
-          queryData,
-        );
-        totalUsage = mergeUsage(totalUsage, insightSynthesis.usage);
-
-        const chartInsightPayload: ChartInsightContentPayload = {
-          success: true,
-          row_count: queryData.length,
-          chart_payload: pythonResponse,
-          insight_text: insightSynthesis.text,
-          analysis_scope: insightArgs.analysis_scope,
-          analysis_focus: insightArgs.analysis_focus,
-          warnings: extractChartWarnings(pythonResponse),
-        };
-
-        responseToReturn = createChartInsightSseResponse(chartInsightPayload);
-      } else {
-        responseToReturn = createChartSseResponse(pythonResponse);
-      }
-    } else if (llmResult.type === "tool_call_insight") {
-      const insightResult = await runInsightFlow(
-        activeSettings,
-        externalSupabase,
-        lastUserMessage,
-        llmResult.args,
-        effectiveAllowedTables,
-      );
-      totalUsage = mergeUsage(totalUsage, insightResult.usage);
-      responseToReturn = createInsightSseResponse(insightResult.payload);
-    } else {
-      let finalText = sanitizeUserFacingText(llmResult.text, userIntent === "explicit_sql");
-      if (userIntent === "explicit_sql" && containsSqlExecutionContent(finalText)) {
-        finalText = `${SQL_DEBUG_ALLOWED_TAG}\n${finalText}`;
-      }
-      responseToReturn = createTextSseResponse(finalText);
     }
 
     const usageMissing = totalUsage.totalTokens <= 0;
@@ -556,10 +681,11 @@ serve(async (req) => {
       model: activeSettings.model,
       usage: totalUsage,
       metadata: {
-        user_intent: userIntent,
-        chart_and_insight_requested: chartAndInsightRequested,
+        user_intent: finalUserIntent,
+        chart_and_insight_requested: finalChartAndInsightRequested,
         agent_id: agentId,
         usage_missing: usageMissing,
+        ...swarmMetadata,
       },
     });
 
@@ -568,11 +694,12 @@ serve(async (req) => {
     console.error("Chat error:", error);
 
     if (error instanceof UserFacingError) {
-      return createTextSseResponse(error.message);
+      return createTextSseResponse(req, error.message);
     }
 
     if (error instanceof Error && error.message === "USER_NOT_LINKED_TO_ACES") {
       return createJsonResponse(
+        req,
         {
           code: "USER_NOT_LINKED_TO_ACES",
           message: "Seu usuario nao esta vinculado a nenhuma empresa (aces_id).",
@@ -583,6 +710,7 @@ serve(async (req) => {
 
     if (error instanceof Error && error.message === "USAGE_LIMIT_REACHED") {
       return createJsonResponse(
+        req,
         {
           code: "USAGE_LIMIT_REACHED",
           message: "Seu limite mensal foi atingido. Aguarde o proximo reset para continuar.",
@@ -593,6 +721,7 @@ serve(async (req) => {
 
     if (error instanceof Error && error.message === "MODEL_PRICING_NOT_FOUND") {
       return createJsonResponse(
+        req,
         {
           code: "MODEL_PRICING_NOT_FOUND",
           message: "Nao ha precificacao ativa para o modelo configurado.",
@@ -603,6 +732,7 @@ serve(async (req) => {
 
     if (error instanceof Error && error.message === "PROFILE_NOT_FOUND") {
       return createJsonResponse(
+        req,
         {
           code: "PROFILE_NOT_FOUND",
           message: "Perfil de billing nao encontrado para o usuario.",
@@ -612,10 +742,7 @@ serve(async (req) => {
     }
 
     const errorMessage = error instanceof Error ? error.message : "Erro interno do servidor";
-    return new Response(
-      JSON.stringify({ error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+    return createJsonResponse(req, { error: errorMessage }, 500);
   }
 });
 
@@ -919,6 +1046,173 @@ function detectComparisonIntent(lastUserMessage: string): boolean {
   return hasComparisonKeyword || (hasMultipleYears && hasPeriodSignal);
 }
 
+function isSalesQuestion(lastUserMessage: string): boolean {
+  const normalized = normalizeIntentText(lastUserMessage || "");
+  if (!normalized) {
+    return false;
+  }
+
+  return /\b(venda|vendas|vendido|vendida|vendeu|vendedor|vendedores|faturamento|faturado|faturou|pedido|pedidos|receita)\b/.test(
+    normalized,
+  );
+}
+
+function asksBudgetIntent(userMessage: string): boolean {
+  const normalized = normalizeIntentText(userMessage || "");
+  if (!normalized) {
+    return false;
+  }
+  return /\b(orcamento|orcamentos|cotacao|cotacoes)\b/.test(normalized);
+}
+
+function containsAtendimentoTable(tables: string): boolean {
+  return /\bATENDIMENTO\b/i.test(tables || "");
+}
+
+function condHasAtenStTipoFilter(cond: string): boolean {
+  return /\bATEN_STTIPO\b/i.test(cond || "");
+}
+
+function injectCondClausePreservingGroupBy(cond: string, clause: string): string {
+  const groupByRegex = /\bGROUP\s+BY\b/i;
+  const groupMatch = groupByRegex.exec(cond);
+  if (!groupMatch) {
+    return `${cond} AND ${clause}`.trim();
+  }
+
+  const splitIndex = groupMatch.index;
+  const beforeGroup = cond.slice(0, splitIndex).trim();
+  const afterGroup = cond.slice(splitIndex).trim();
+  return `${beforeGroup} AND ${clause} ${afterGroup}`.trim();
+}
+
+function extractAtendimentoQualifier(tables: string): string {
+  const source = (tables || "").trim();
+  const fromMatch = source.match(/\bATENDIMENTO\b(?:\s+(?:AS\s+)?([A-Z0-9_]+))?/i);
+  const alias = fromMatch?.[1];
+  if (!alias || /^(LEFT|RIGHT|INNER|FULL|CROSS|JOIN|ON|WHERE|GROUP|ORDER|HAVING)$/i.test(alias)) {
+    return "ATENDIMENTO";
+  }
+  return alias;
+}
+
+function applySwarmGuardrailToQueryPayload(
+  payload: SwarmQueryPayload,
+  userMessage: string,
+): { payload: SwarmQueryPayload; atendimentoTipoApplied: boolean; reason: string } {
+  if (!containsAtendimentoTable(payload.tables)) {
+    return { payload, atendimentoTipoApplied: false, reason: "no_atendimento_table" };
+  }
+
+  if (asksBudgetIntent(userMessage)) {
+    return { payload, atendimentoTipoApplied: false, reason: "budget_intent" };
+  }
+
+  if (condHasAtenStTipoFilter(payload.cond)) {
+    return { payload, atendimentoTipoApplied: false, reason: "already_filtered" };
+  }
+
+  const qualifier = extractAtendimentoQualifier(payload.tables);
+  const guarded: SwarmQueryPayload = {
+    ...payload,
+    cond: injectCondClausePreservingGroupBy(payload.cond, `${qualifier}.ATEN_STTIPO <> 'O'`),
+  };
+  return { payload: guarded, atendimentoTipoApplied: true, reason: "guardrail_injected" };
+}
+
+function toNumericValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.replace(/\./g, "").replace(",", ".").trim();
+    const parsed = Number(normalized);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function toIntValue(value: unknown): number | null {
+  const parsed = toNumericValue(value);
+  if (parsed === null) return null;
+  const rounded = Math.round(parsed);
+  return Number.isFinite(rounded) ? rounded : null;
+}
+
+function findCaseInsensitiveKey(row: Record<string, unknown>, target: string): string | null {
+  const keys = Object.keys(row);
+  const lowerTarget = target.toLowerCase();
+  const found = keys.find((key) => key.toLowerCase() === lowerTarget);
+  return found || null;
+}
+
+function pickPrimaryMetricKey(rows: Record<string, unknown>[], excludedKeys: Set<string>): string | null {
+  if (!rows.length) return null;
+  const sample = rows[0];
+  const candidateKeys = Object.keys(sample).filter((key) => !excludedKeys.has(key.toLowerCase()));
+  const numericKeys = candidateKeys.filter((key) => toNumericValue(sample[key]) !== null);
+  if (!numericKeys.length) return null;
+
+  const preferred = numericKeys.find((key) => /\b(total|venda|valor)\b/i.test(key));
+  if (preferred) return preferred;
+  return numericKeys[0];
+}
+
+function normalizeChartDatasetForYearMonth(rows: Record<string, unknown>[]): {
+  rows: Record<string, unknown>[];
+  applied: boolean;
+  metricKey?: string;
+} {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { rows, applied: false };
+  }
+
+  const sample = rows[0];
+  const yearKey = findCaseInsensitiveKey(sample, "Ano");
+  const monthKey = findCaseInsensitiveKey(sample, "Mes");
+  if (!yearKey || !monthKey) {
+    return { rows, applied: false };
+  }
+
+  const excludedKeys = new Set([yearKey.toLowerCase(), monthKey.toLowerCase()]);
+  const metricKey = pickPrimaryMetricKey(rows, excludedKeys);
+  if (!metricKey) {
+    return { rows, applied: false };
+  }
+
+  const transformed: Record<string, unknown>[] = [];
+  for (const row of rows) {
+    const year = toIntValue(row[yearKey]);
+    const month = toIntValue(row[monthKey]);
+    const metric = toNumericValue(row[metricKey]);
+
+    if (year === null || month === null || metric === null || month < 1 || month > 12) {
+      return { rows, applied: false };
+    }
+
+    const mm = String(month).padStart(2, "0");
+    transformed.push({
+      Periodo: `${year}-${mm}`,
+      [metricKey]: metric,
+    });
+  }
+
+  return {
+    rows: transformed,
+    applied: true,
+    metricKey,
+  };
+}
+
+function isIndexChartNormalizationFallbackEnabled(): boolean {
+  const raw = Deno.env.get("INDEX_CHART_NORMALIZATION_FALLBACK");
+  if (!raw) return true;
+  const normalized = raw.trim().toLowerCase();
+  return normalized !== "0" && normalized !== "false" && normalized !== "off" && normalized !== "no";
+}
+
 function detectChartAndInsightIntent(lastUserMessage: string): boolean {
   const normalized = normalizeIntentText(lastUserMessage || "");
   if (!normalized) {
@@ -936,6 +1230,321 @@ function detectChartAndInsightIntent(lastUserMessage: string): boolean {
     ) || /\b(comentario|comente|conclusao)\b/.test(normalized);
 
   return asksChart && asksInsight;
+}
+
+function isSwarmEnabled(): boolean {
+  const rawValue = Deno.env.get("SWARM_ENABLED");
+  if (!rawValue) {
+    return true;
+  }
+
+  const normalized = rawValue.trim().toLowerCase();
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return true;
+}
+
+async function invokeDelphiProxy(
+  supabaseUrl: string,
+  supabaseServiceKey: string,
+  payload: DelphiProxyPayload,
+): Promise<DelphiProxyResult> {
+  const proxyUrl = `${supabaseUrl}/functions/v1/external-db-proxy`;
+  const response = await fetch(proxyUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: supabaseServiceKey,
+      Authorization: `Bearer ${supabaseServiceKey}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const rawBody = await response.text();
+  const parsed = safeJsonParse(rawBody);
+
+  if (!response.ok) {
+    const remoteError = typeof parsed?.error === "string" ? parsed.error : "";
+    const message = remoteError || `Falha no proxy Delphi (status ${response.status}).`;
+    throw new Error(message);
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Resposta invalida do proxy Delphi.");
+  }
+
+  const proxyPayload = parsed as DelphiProxyResult;
+  if (!proxyPayload.success) {
+    throw new Error(proxyPayload.error || "Proxy Delphi retornou erro.");
+  }
+
+  return proxyPayload;
+}
+
+async function runSwarmFlow(params: {
+  req: Request;
+  settings: ActiveSettings;
+  messages: ChatMessage[];
+  userMessage: string;
+  userIntent: UserIntent;
+  chartAndInsightRequested: boolean;
+  supabaseUrl: string;
+  supabaseServiceKey: string;
+  sqlDebug: boolean;
+}): Promise<SwarmFlowResult> {
+  const {
+    req,
+    settings,
+    messages,
+    userMessage,
+    userIntent,
+    chartAndInsightRequested,
+    supabaseUrl,
+    supabaseServiceKey,
+    sqlDebug,
+  } = params;
+
+  let usage = emptyUsage();
+
+  try {
+    const supervisorResult = await routeToSpecialist({
+      userMessage,
+      chatHistory: messages.slice(-12),
+    });
+    usage = mergeUsage(usage, supervisorResult.usage);
+
+    if (supervisorResult.shouldFallback) {
+      throw new SwarmFlowError("SWARM_SUPERVISOR_FAILED", usage);
+    }
+
+    if (!supervisorResult.selectedWorkers.length) {
+      const textResponse = await callProvider(
+        settings,
+        "Voce e um assistente virtual orientado por negocio. Responda de forma clara e objetiva.",
+        messages,
+        { withTools: false },
+      );
+      usage = mergeUsage(usage, textResponse.usage);
+
+      const content =
+        textResponse.result.type === "text"
+          ? sanitizeUserFacingText(textResponse.result.text, false)
+          : "Posso te ajudar com dados de negocio. O que voce gostaria de analisar?";
+
+      return {
+        response: createTextSseResponse(req, content),
+        usage,
+        selectedWorkers: [],
+      };
+    }
+
+    const activeSchemas = resolveSchemas(supervisorResult.selectedWorkers);
+    if (!activeSchemas.trim()) {
+      throw new SwarmFlowError("SWARM_SCHEMA_RESOLUTION_EMPTY", usage);
+    }
+
+    const queryPayload = await generateSqlQuery({
+      userMessage,
+      activeSchemas,
+    });
+    usage = mergeUsage(usage, queryPayload.usage);
+
+    if (queryPayload.shouldFallback) {
+      throw new SwarmFlowError("SWARM_QUERY_GENERATOR_FAILED", usage);
+    }
+
+    if (queryPayload.error) {
+      return {
+        response: createTextSseResponse(req, queryPayload.error),
+        usage,
+        selectedWorkers: supervisorResult.selectedWorkers,
+      };
+    }
+
+    if (!queryPayload.fields || !queryPayload.tables || !queryPayload.cond) {
+      throw new SwarmFlowError("SWARM_QUERY_GENERATOR_INCOMPLETE", usage);
+    }
+
+    let effectiveQueryPayload: SwarmQueryPayload = {
+      fields: queryPayload.fields,
+      tables: queryPayload.tables,
+      cond: queryPayload.cond,
+      order: queryPayload.order,
+      rowspPage: queryPayload.rowspPage,
+      chart_type: queryPayload.chart_type,
+      chart_title: queryPayload.chart_title,
+    };
+    console.log("[chat][swarm] data_source=delphi_proxy", {
+      workers: supervisorResult.selectedWorkers,
+      tables: effectiveQueryPayload.tables,
+      rowspPage: effectiveQueryPayload.rowspPage ?? null,
+    });
+
+    const initialGuardrail = applySwarmGuardrailToQueryPayload(effectiveQueryPayload, userMessage);
+    effectiveQueryPayload = initialGuardrail.payload;
+    console.log(
+      `[SWARM_GUARDRAIL] atendimentoTipoApplied=${initialGuardrail.atendimentoTipoApplied} reason=${initialGuardrail.reason}`,
+    );
+
+    let proxyResult = await invokeDelphiProxy(supabaseUrl, supabaseServiceKey, {
+      fields: effectiveQueryPayload.fields,
+      tables: effectiveQueryPayload.tables,
+      cond: effectiveQueryPayload.cond,
+      order: effectiveQueryPayload.order,
+      rowspPage: effectiveQueryPayload.rowspPage,
+    });
+
+    let queryData = Array.isArray(proxyResult.data) ? proxyResult.data : [];
+    const shouldRetryForSales = isSalesQuestion(userMessage);
+
+    if (shouldRetryForSales && queryData.length === 0) {
+      console.log("[chat][swarm][retry] reason=empty_result_for_sales");
+      const retryPrompt =
+        `${userMessage}\n\n` +
+        "INSTRUCOES DE QUALIDADE (obrigatorio):\n" +
+        "- Use tabela de vendas ATENDIMENTO quando aplicavel.\n" +
+        "- Aplique filtros de ativos (_ID_DEL IS NULL) e exclua orcamentos por padrao.\n" +
+        "- Mantenha ORDER BY explicito por coluna/alias.\n" +
+        "- Evite consultas que dependam de tabelas fora do dicionario atual.";
+
+      const retryQueryPayload = await generateSqlQuery({
+        userMessage: retryPrompt,
+        activeSchemas,
+      });
+      usage = mergeUsage(usage, retryQueryPayload.usage);
+
+      if (!retryQueryPayload.shouldFallback && !retryQueryPayload.error &&
+          retryQueryPayload.fields && retryQueryPayload.tables && retryQueryPayload.cond) {
+        effectiveQueryPayload = {
+          fields: retryQueryPayload.fields,
+          tables: retryQueryPayload.tables,
+          cond: retryQueryPayload.cond,
+          order: retryQueryPayload.order,
+          rowspPage: retryQueryPayload.rowspPage,
+          chart_type: retryQueryPayload.chart_type,
+          chart_title: retryQueryPayload.chart_title,
+        };
+        const retryGuardrail = applySwarmGuardrailToQueryPayload(effectiveQueryPayload, userMessage);
+        effectiveQueryPayload = retryGuardrail.payload;
+        console.log(
+          `[SWARM_GUARDRAIL] atendimentoTipoApplied=${retryGuardrail.atendimentoTipoApplied} reason=${retryGuardrail.reason}`,
+        );
+
+        proxyResult = await invokeDelphiProxy(supabaseUrl, supabaseServiceKey, {
+          fields: effectiveQueryPayload.fields,
+          tables: effectiveQueryPayload.tables,
+          cond: effectiveQueryPayload.cond,
+          order: effectiveQueryPayload.order,
+          rowspPage: effectiveQueryPayload.rowspPage,
+        });
+        queryData = Array.isArray(proxyResult.data) ? proxyResult.data : [];
+      }
+    }
+
+    if (shouldRetryForSales && queryData.length === 0) {
+      return {
+        response: createTextSseResponse(
+          req,
+          "Nao encontrei vendas para os filtros solicitados no periodo informado. Posso ajustar o periodo ou abrir por vendedor, produto ou loja para localizar os dados.",
+        ),
+        usage,
+        selectedWorkers: supervisorResult.selectedWorkers,
+      };
+    }
+
+    const sqlDebugQuery = sqlDebug
+      ? buildSqlDebugQuery({
+          fields: effectiveQueryPayload.fields,
+          tables: effectiveQueryPayload.tables,
+          cond: effectiveQueryPayload.cond,
+          order: effectiveQueryPayload.order,
+        })
+      : undefined;
+
+    if (userIntent === "chart" || effectiveQueryPayload.chart_type) {
+      let chartRows = queryData;
+      if (isIndexChartNormalizationFallbackEnabled()) {
+        const normalizedChartData = normalizeChartDatasetForYearMonth(queryData);
+        chartRows = normalizedChartData.rows;
+        if (normalizedChartData.applied) {
+          console.log(
+            `[CHART_DATA_NORMALIZED] mode=year_month_to_period metric=${normalizedChartData.metricKey || "unknown"} rows=${chartRows.length} fallback=index`,
+          );
+        }
+      }
+
+      const chartArgs: ChartToolArgs = {
+        sql_query: `SELECT ${effectiveQueryPayload.fields} FROM ${effectiveQueryPayload.tables}`,
+        chart_type: effectiveQueryPayload.chart_type || "bar",
+        chart_title: effectiveQueryPayload.chart_title || "Analise de Dados",
+      };
+
+      const pythonResponse = await generateChartFromPython(chartRows, chartArgs);
+      const pythonPayload =
+        sqlDebugQuery
+          ? { ...pythonResponse, sql_debug: sqlDebugQuery }
+          : pythonResponse;
+
+      if (chartAndInsightRequested) {
+        const insightArgs = buildInsightArgsFromChartRequest(userMessage);
+        const insightSynthesis = await synthesizeInsightText(settings, userMessage, insightArgs, queryData);
+        usage = mergeUsage(usage, insightSynthesis.usage);
+
+        const chartInsightPayload: ChartInsightContentPayload = {
+          success: true,
+          row_count: queryData.length,
+          chart_payload: pythonPayload,
+          insight_text: insightSynthesis.text,
+          analysis_scope: insightArgs.analysis_scope,
+          analysis_focus: insightArgs.analysis_focus,
+          warnings: extractChartWarnings(pythonResponse),
+          sql_debug: sqlDebugQuery,
+        };
+
+        return {
+          response: createChartInsightSseResponse(req, chartInsightPayload),
+          usage,
+          selectedWorkers: supervisorResult.selectedWorkers,
+        };
+      }
+
+      return {
+        response: createChartSseResponse(req, pythonPayload),
+        usage,
+        selectedWorkers: supervisorResult.selectedWorkers,
+      };
+    }
+
+    const insightArgs = buildInsightArgsFromChartRequest(userMessage);
+    const insightSynthesis = await synthesizeInsightText(settings, userMessage, insightArgs, queryData);
+    usage = mergeUsage(usage, insightSynthesis.usage);
+
+    const rows = queryData.slice(0, MAX_INSIGHT_ROWS);
+    const payload: InsightContentPayload = {
+      success: true,
+      analysis_scope: insightArgs.analysis_scope,
+      analysis_focus: insightArgs.analysis_focus,
+      row_count: queryData.length,
+      columns: inferColumns(rows),
+      rows,
+      insight_text: insightSynthesis.text,
+      sql_debug: sqlDebugQuery,
+    };
+
+    return {
+      response: createInsightSseResponse(req, payload),
+      usage,
+      selectedWorkers: supervisorResult.selectedWorkers,
+    };
+  } catch (error) {
+    if (error instanceof SwarmFlowError) {
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : "SWARM_FLOW_FAILED";
+    throw new SwarmFlowError(message, usage);
+  }
 }
 
 function buildInsightArgsFromChartRequest(userQuestion: string): InsightToolArgs {
@@ -1010,11 +1619,21 @@ async function authenticateRequestUser(req: Request, supabase: any): Promise<Aut
   };
 }
 
-function createJsonResponse(payload: Record<string, unknown>, status: number): Response {
-  return new Response(
-    JSON.stringify(payload),
-    { status, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-  );
+function createJsonResponse(
+  req: Request,
+  payload: Record<string, unknown>,
+  status: number,
+  extraHeaders: HeadersInit = {},
+): Response {
+  const origin = req.headers.get("origin");
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: {
+      ...createCorsHeaders(origin),
+      "Content-Type": "application/json",
+      ...extraHeaders,
+    },
+  });
 }
 
 function toSafeNumber(value: unknown): number {
@@ -1991,6 +2610,7 @@ async function runInsightFlow(
   userQuestion: string,
   insightArgs: InsightToolArgs,
   allowedTables: Set<string>,
+  sqlDebugQuery?: string,
 ): Promise<{ payload: InsightContentPayload; usage: TokenUsage }> {
   const queryData = await executeInsightQuery(externalSupabase, insightArgs.sql_query, allowedTables);
   const rows = queryData.slice(0, MAX_INSIGHT_ROWS);
@@ -2010,6 +2630,7 @@ async function runInsightFlow(
       columns: inferColumns(rows),
       rows,
       insight_text: insightSynthesis.text,
+      sql_debug: sqlDebugQuery,
     },
     usage: insightSynthesis.usage,
   };
@@ -2208,24 +2829,50 @@ function containsSqlExecutionContent(text: string): boolean {
   return false;
 }
 
-function createTextSseResponse(text: string): Response {
+function buildSqlDebugQuery(payload: {
+  fields: string;
+  tables: string;
+  cond: string;
+  order?: string;
+}): string {
+  const base = `SELECT ${payload.fields} FROM ${payload.tables}`;
+  const whereClause = payload.cond ? ` WHERE ${payload.cond}` : "";
+  const orderClause = payload.order ? ` ORDER BY ${payload.order}` : "";
+  return `${base}${whereClause}${orderClause}`.trim();
+}
+
+function toBooleanFlag(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value === 1;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+  }
+  return false;
+}
+
+function createTextSseResponse(req: Request, text: string): Response {
   const safeText = text.trim() ? text : "Desculpe, nao consegui gerar uma resposta no momento.";
-  return createSseResponse(chunkText(safeText, 180));
+  return createSseResponse(req, chunkText(safeText, 180));
 }
 
-function createChartSseResponse(pythonPayload: Record<string, unknown>): Response {
+function createChartSseResponse(req: Request, pythonPayload: Record<string, unknown>): Response {
   const chartContent = `[CHART_CONTENT] ${JSON.stringify(pythonPayload)}`;
-  return createSseResponse([chartContent]);
+  return createSseResponse(req, [chartContent]);
 }
 
-function createChartInsightSseResponse(payload: ChartInsightContentPayload): Response {
+function createChartInsightSseResponse(req: Request, payload: ChartInsightContentPayload): Response {
   const chartInsightContent = `${CHART_INSIGHT_CONTENT_TAG} ${JSON.stringify(payload)}`;
-  return createSseResponse([chartInsightContent]);
+  return createSseResponse(req, [chartInsightContent]);
 }
 
-function createInsightSseResponse(payload: InsightContentPayload): Response {
+function createInsightSseResponse(req: Request, payload: InsightContentPayload): Response {
   const insightContent = `${INSIGHT_CONTENT_TAG} ${JSON.stringify(payload)}`;
-  return createSseResponse([insightContent]);
+  return createSseResponse(req, [insightContent]);
 }
 
 function extractChartWarnings(pythonPayload: Record<string, unknown>): string[] {
@@ -2239,7 +2886,7 @@ function extractChartWarnings(pythonPayload: Record<string, unknown>): string[] 
     .filter((warning) => warning.length > 0);
 }
 
-function createSseResponse(chunks: string[]): Response {
+function createSseResponse(req: Request, chunks: string[]): Response {
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -2259,7 +2906,15 @@ function createSseResponse(chunks: string[]): Response {
     },
   });
 
-  return new Response(stream, { headers: sseHeaders });
+  const origin = req.headers.get("origin");
+  return new Response(stream, {
+    headers: {
+      ...createCorsHeaders(origin),
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
 }
 
 function chunkText(text: string, chunkSize: number): string[] {

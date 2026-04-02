@@ -6,9 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { createAgent, setAgentTables, getMetadata } from "@/lib/api";
-import { isAllowedOperationTable, OPERATION_TABLE_ALLOWLIST, toOperationAreaLabel } from "@/lib/operationAreas";
-import { DatabaseMetadata } from "@/types/database";
+import { createAgent, setAgentTables } from "@/lib/api";
+import { OPERATION_TABLE_ALLOWLIST, toOperationAreaLabel } from "@/lib/operationAreas";
 import { toast } from "sonner";
 import { Link } from "react-router-dom";
 
@@ -22,30 +21,8 @@ export default function AgentCreate() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    const loadTables = async () => {
-      try {
-        const metadata = await getMetadata();
-        const tableSet = new Map<string, { schema: string; table: string }>();
-        metadata.forEach((m: DatabaseMetadata) => {
-          const key = JSON.stringify({ schema: m.schema_name, table: m.table_name });
-          if (!tableSet.has(key)) {
-            tableSet.set(key, { schema: m.schema_name, table: m.table_name });
-          }
-        });
-        const order = new Map(OPERATION_TABLE_ALLOWLIST.map((name, index) => [name, index]));
-        const tables = Array.from(tableSet.values())
-          .filter(({ table }) => isAllowedOperationTable(table))
-          .sort((a, b) => {
-            const aOrder = order.get(a.table) ?? Number.MAX_SAFE_INTEGER;
-            const bOrder = order.get(b.table) ?? Number.MAX_SAFE_INTEGER;
-            return aOrder - bOrder;
-          });
-        setAvailableTables(tables);
-      } catch (error) {
-        console.error("Failed to load tables:", error);
-      }
-    };
-    loadTables();
+    const tables = OPERATION_TABLE_ALLOWLIST.map((table) => ({ schema: "public", table }));
+    setAvailableTables(tables);
   }, []);
 
   const toggleTable = (key: string) => {
@@ -160,7 +137,7 @@ export default function AgentCreate() {
           <div className="rounded-2xl glass-card p-4 max-h-[300px] overflow-y-auto space-y-2">
             {availableTables.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                Nenhuma área disponível. Verifique os metadados na aba Admin.
+                Nenhuma área disponível. Consulte o administrador do sistema.
               </p>
             ) : (
               availableTables.map(({ schema, table }) => {

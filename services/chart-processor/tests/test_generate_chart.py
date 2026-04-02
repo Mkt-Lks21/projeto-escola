@@ -279,3 +279,30 @@ def test_bar_chart_supports_long_comparison_with_year_as_series() -> None:
     assert "ano" not in trace_names
     assert "total_vendas" not in trace_names
     assert body["plotly_figure"]["layout"].get("barmode") == "group"
+
+
+def test_line_chart_normalizes_year_month_shape_to_period_series() -> None:
+    payload = {
+        "data": [
+            {"Ano": 2025, "Mes": 1, "TotalVendas": 153137.86},
+            {"Ano": 2025, "Mes": 2, "TotalVendas": 306587.31},
+            {"Ano": 2025, "Mes": 3, "TotalVendas": 302690.50},
+        ],
+        "chart_intent": "line",
+        "title": "Vendas 2025",
+    }
+    response = client.post("/generate-chart", json=payload)
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["chart_type_used"] == "line"
+    assert body["selected_columns"] == {
+        "x": "Periodo",
+        "y": "TotalVendas",
+        "series": None,
+    }
+    assert any("normalized year/month dataset" in warning.lower() for warning in body["warnings"])
+
+    trace = body["plotly_figure"]["data"][0]
+    x_values = [str(value)[:10] for value in trace["x"]]
+    assert x_values == ["2025-01-01", "2025-02-01", "2025-03-01"]

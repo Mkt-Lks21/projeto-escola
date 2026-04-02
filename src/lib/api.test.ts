@@ -57,4 +57,23 @@ describe("api auth headers", () => {
       sendChatMessage([{ role: "user", content: "oi" }], "conv-1"),
     ).rejects.toThrow("Sessao expirada");
   });
+
+  it("forwards sqlDebug flag to chat function payload", async () => {
+    mockedSupabase.auth.getSession.mockResolvedValue({
+      data: { session: { access_token: "token-123" } },
+      error: null,
+    });
+
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+    await sendChatMessage([{ role: "user", content: "oi" }], "conv-1", undefined, true);
+
+    const [, options] = fetchMock.mock.calls[0];
+    const payload = JSON.parse(String((options as RequestInit).body));
+    expect(payload.sqlDebug).toBe(true);
+
+    fetchMock.mockRestore();
+  });
 });

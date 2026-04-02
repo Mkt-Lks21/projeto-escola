@@ -14,7 +14,6 @@ describe("Chat layout alignment", () => {
         messages={[]}
         isLoading={false}
         streamingContent=""
-        onExecuteQuery={async () => []}
         emptyGreeting={{ title: "Ola", subtitle: "Como posso ajudar?" }}
         suggestions={["Sugestao 1"]}
         onSuggestionClick={() => undefined}

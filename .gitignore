@@ -1,24 +1,76 @@
-# Logs
-logs
+# --- Dependencies / package managers ---
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+
+# --- Build output / cache ---
+dist/
+dist-ssr/
+build/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# --- Env / secrets ---
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local
+
+# --- Logs / debug ---
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+bun-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# --- Bun ---
+.bun/
+bun.lockb.tmp
 
-# Editor directories and files
+# --- Deno / Supabase CLI ---
+deno_dir/
+.deno/
+supabase/.temp/
+supabase/.branches/
+supabase/.history/
+supabase/.env
+supabase/.env.*
+
+# --- Python artifacts (chart service) ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# --- OS / editor ---
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# --- Git hooks path helper ---
+.githooks-local/
+*.csv
+.env
+.env.local
+Agents
+postman
+.postman
+ui-ux-pro-max-skill-main
+.vercel

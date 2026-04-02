@@ -4,7 +4,6 @@ import { useAuth } from "@/hooks/useAuth";
 import AppSidebar from "@/components/sidebar/AppSidebar";
 import ChatMessages from "@/components/chat/ChatMessages";
 import ChatInput from "@/components/chat/ChatInput";
-import { executeQuery } from "@/lib/api";
 import MobileHeader from "@/components/layout/MobileHeader";
 
 const Index = () => {
@@ -23,10 +22,6 @@ const Index = () => {
   } = useChat();
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-
-  const handleExecuteQuery = async (query: string) => {
-    return await executeQuery(query);
-  };
 
   const greetingSubtitle = useMemo(() => {
     const variants = [
@@ -77,7 +72,6 @@ const Index = () => {
           messages={messages}
           isLoading={isLoading}
           streamingContent={streamingContent}
-          onExecuteQuery={handleExecuteQuery}
           emptyGreeting={greeting}
           suggestions={suggestions}
           onSuggestionClick={sendMessage}

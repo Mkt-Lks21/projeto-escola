@@ -97,6 +97,20 @@ describe("assistantContentParser", () => {
     expect(parsed.sqlBlocks.length).toBe(0);
   });
 
+  it("preserves sql_debug for structured payloads", () => {
+    const insightContent =
+      '[INSIGHT_CONTENT] {"success":true,"analysis_scope":"broad","analysis_focus":"Estoque","row_count":1,"columns":["total"],"rows":[{"total":10}],"insight_text":"Resumo.","sql_debug":"SELECT COUNT(*) AS total FROM estoque WHERE EMP_ID = 1"}';
+    const chartContent =
+      '[CHART_INSIGHT_CONTENT] {"success":true,"row_count":1,"chart_payload":{"success":true,"sql_debug":"SELECT TOP 10 * FROM estoque WHERE EMP_ID = 1","plotly_figure":{"data":[],"layout":{}}},"insight_text":"Resumo.","analysis_scope":"broad","analysis_focus":"Estoque","warnings":[],"sql_debug":"SELECT SUM(qtd) FROM estoque WHERE EMP_ID = 1"}';
+
+    const parsedInsight = parseAssistantContent(insightContent);
+    const parsedChartInsight = parseAssistantContent(chartContent);
+
+    expect(parsedInsight.insightPayload?.sql_debug).toContain("SELECT COUNT(*)");
+    expect(parsedChartInsight.chartInsightPayload?.sql_debug).toContain("SELECT SUM(qtd)");
+    expect(parsedChartInsight.chartInsightPayload?.chart_payload?.sql_debug).toContain("SELECT TOP 10");
+  });
+
   it("falls back to plain text when insight payload is invalid json", () => {
     const content = '[INSIGHT_CONTENT] {"success":true';
     const parsed = parseAssistantContent(content);

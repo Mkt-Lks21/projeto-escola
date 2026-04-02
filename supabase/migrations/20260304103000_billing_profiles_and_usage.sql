@@ -1,5 +1,4 @@
 BEGIN;
-
 -- Billing plans
 CREATE TABLE IF NOT EXISTS public.billing_plans (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -11,7 +10,6 @@ CREATE TABLE IF NOT EXISTS public.billing_plans (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-
 INSERT INTO public.billing_plans (code, name, monthly_token_limit, monthly_credit_limit, is_active)
 VALUES ('test_1m', 'Plano Teste', 1000000, 100000, true)
 ON CONFLICT (code) DO UPDATE
@@ -21,7 +19,6 @@ SET
   monthly_credit_limit = EXCLUDED.monthly_credit_limit,
   is_active = EXCLUDED.is_active,
   updated_at = now();
-
 -- Provider/model pricing used by billing conversion
 CREATE TABLE IF NOT EXISTS public.llm_model_pricing (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -33,11 +30,9 @@ CREATE TABLE IF NOT EXISTS public.llm_model_pricing (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-
 CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_model_pricing_active
   ON public.llm_model_pricing (provider, model)
   WHERE is_active = true;
-
 INSERT INTO public.llm_model_pricing (provider, model, input_usd_per_1m_tokens, output_usd_per_1m_tokens, is_active)
 VALUES
   ('openai', 'gpt-4o', 5.000000, 15.000000, true),
@@ -49,7 +44,6 @@ VALUES
   ('gemini', 'gemini-2.5-flash-lite', 0.100000, 0.300000, true),
   ('gemini', 'gemini-2.5-pro', 3.500000, 10.500000, true)
 ON CONFLICT DO NOTHING;
-
 -- User profile and billing config
 CREATE TABLE IF NOT EXISTS public.user_profiles (
   user_id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -67,14 +61,11 @@ CREATE TABLE IF NOT EXISTS public.user_profiles (
     username IS NULL OR username ~ '^[a-z0-9_]{3,30}$'
   )
 );
-
 CREATE UNIQUE INDEX IF NOT EXISTS uq_user_profiles_username_lower
   ON public.user_profiles ((lower(username)))
   WHERE username IS NOT NULL;
-
 CREATE INDEX IF NOT EXISTS idx_user_profiles_aces_user
   ON public.user_profiles (aces_id, user_id);
-
 -- Raw usage events (one row per interaction)
 CREATE TABLE IF NOT EXISTS public.billing_usage_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -94,16 +85,12 @@ CREATE TABLE IF NOT EXISTS public.billing_usage_events (
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-
 CREATE INDEX IF NOT EXISTS idx_billing_usage_events_user_created
   ON public.billing_usage_events (user_id, created_at DESC);
-
 CREATE INDEX IF NOT EXISTS idx_billing_usage_events_aces_created
   ON public.billing_usage_events (aces_id, created_at DESC);
-
 CREATE INDEX IF NOT EXISTS idx_billing_usage_events_user_cycle
   ON public.billing_usage_events (user_id, cycle_start_at);
-
 -- Aggregated usage per cycle
 CREATE TABLE IF NOT EXISTS public.billing_usage_cycles (
   user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -116,10 +103,8 @@ CREATE TABLE IF NOT EXISTS public.billing_usage_cycles (
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, cycle_start_at)
 );
-
 CREATE INDEX IF NOT EXISTS idx_billing_usage_cycles_aces
   ON public.billing_usage_cycles (aces_id, cycle_start_at DESC);
-
 -- Keep user profile values normalized and with defaults.
 CREATE OR REPLACE FUNCTION public.normalize_user_profile_fields()
 RETURNS trigger
@@ -176,31 +161,26 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-
 DROP TRIGGER IF EXISTS normalize_user_profile_fields_trigger ON public.user_profiles;
 CREATE TRIGGER normalize_user_profile_fields_trigger
   BEFORE INSERT OR UPDATE ON public.user_profiles
   FOR EACH ROW
   EXECUTE FUNCTION public.normalize_user_profile_fields();
-
 DROP TRIGGER IF EXISTS update_user_profiles_updated_at ON public.user_profiles;
 CREATE TRIGGER update_user_profiles_updated_at
   BEFORE UPDATE ON public.user_profiles
   FOR EACH ROW
   EXECUTE FUNCTION public.update_updated_at_column();
-
 DROP TRIGGER IF EXISTS update_billing_plans_updated_at ON public.billing_plans;
 CREATE TRIGGER update_billing_plans_updated_at
   BEFORE UPDATE ON public.billing_plans
   FOR EACH ROW
   EXECUTE FUNCTION public.update_updated_at_column();
-
 DROP TRIGGER IF EXISTS update_llm_model_pricing_updated_at ON public.llm_model_pricing;
 CREATE TRIGGER update_llm_model_pricing_updated_at
   BEFORE UPDATE ON public.llm_model_pricing
   FOR EACH ROW
   EXECUTE FUNCTION public.update_updated_at_column();
-
 -- Auto-create profile when auth user is created.
 CREATE OR REPLACE FUNCTION public.handle_new_auth_user_profile()
 RETURNS trigger
@@ -246,13 +226,11 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-
 DROP TRIGGER IF EXISTS on_auth_user_created_user_profile ON auth.users;
 CREATE TRIGGER on_auth_user_created_user_profile
   AFTER INSERT ON auth.users
   FOR EACH ROW
   EXECUTE FUNCTION public.handle_new_auth_user_profile();
-
 -- Backfill missing profiles for existing auth users.
 INSERT INTO public.user_profiles (
   user_id,
@@ -277,7 +255,6 @@ CROSS JOIN LATERAL (
 ) bp
 LEFT JOIN public.user_profiles up ON up.user_id = au.id
 WHERE up.user_id IS NULL;
-
 -- Returns start/end bounds for a rolling monthly cycle anchored by day-of-month.
 CREATE OR REPLACE FUNCTION public.billing_cycle_bounds(
   p_reference_at timestamptz,
@@ -335,7 +312,6 @@ BEGIN
   RETURN NEXT;
 END;
 $$;
-
 -- Snapshot helper consumed by edge functions and frontend.
 CREATE OR REPLACE FUNCTION public.billing_get_usage_snapshot(
   p_user_id uuid,
@@ -423,7 +399,6 @@ BEGIN
    AND c.cycle_start_at = cycle_row.cycle_start_at;
 END;
 $$;
-
 -- Public authenticated helper for usage panel.
 CREATE OR REPLACE FUNCTION public.billing_get_my_usage_summary()
 RETURNS TABLE (
@@ -449,7 +424,6 @@ AS $$
   SELECT *
   FROM public.billing_get_usage_snapshot(auth.uid(), now());
 $$;
-
 -- Records one usage event and updates aggregated cycle usage atomically.
 CREATE OR REPLACE FUNCTION public.billing_record_usage(
   p_user_id uuid,
@@ -611,58 +585,47 @@ BEGIN
   LIMIT 1;
 END;
 $$;
-
 -- RLS for new tables
 ALTER TABLE public.billing_plans ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.llm_model_pricing ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_usage_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_usage_cycles ENABLE ROW LEVEL SECURITY;
-
 DROP POLICY IF EXISTS "Authenticated users can read billing plans" ON public.billing_plans;
 CREATE POLICY "Authenticated users can read billing plans"
   ON public.billing_plans FOR SELECT
   USING (auth.role() = 'authenticated');
-
 DROP POLICY IF EXISTS "Users can read own profile" ON public.user_profiles;
 CREATE POLICY "Users can read own profile"
   ON public.user_profiles FOR SELECT
   USING (auth.uid() = user_id);
-
 DROP POLICY IF EXISTS "Users can update own profile" ON public.user_profiles;
 CREATE POLICY "Users can update own profile"
   ON public.user_profiles FOR UPDATE
   USING (auth.uid() = user_id)
   WITH CHECK (auth.uid() = user_id);
-
 DROP POLICY IF EXISTS "Users can insert own profile" ON public.user_profiles;
 CREATE POLICY "Users can insert own profile"
   ON public.user_profiles FOR INSERT
   WITH CHECK (auth.uid() = user_id);
-
 DROP POLICY IF EXISTS "Users can read own usage events" ON public.billing_usage_events;
 CREATE POLICY "Users can read own usage events"
   ON public.billing_usage_events FOR SELECT
   USING (auth.uid() = user_id);
-
 DROP POLICY IF EXISTS "Users can read own usage cycles" ON public.billing_usage_cycles;
 CREATE POLICY "Users can read own usage cycles"
   ON public.billing_usage_cycles FOR SELECT
   USING (auth.uid() = user_id);
-
 -- Lock down direct execution; expose only intended functions to app clients.
 REVOKE ALL ON FUNCTION public.billing_get_usage_snapshot(uuid, timestamptz) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.billing_record_usage(uuid, uuid, uuid, text, text, integer, integer, timestamptz, jsonb) FROM PUBLIC, anon, authenticated;
-
 GRANT EXECUTE ON FUNCTION public.billing_get_usage_snapshot(uuid, timestamptz) TO service_role;
 GRANT EXECUTE ON FUNCTION public.billing_record_usage(uuid, uuid, uuid, text, text, integer, integer, timestamptz, jsonb) TO service_role;
 GRANT EXECUTE ON FUNCTION public.billing_get_my_usage_summary() TO authenticated, service_role;
-
 -- Storage for avatar uploads
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('profile-avatars', 'profile-avatars', true)
 ON CONFLICT (id) DO NOTHING;
-
 DROP POLICY IF EXISTS "Users can upload own profile avatars" ON storage.objects;
 CREATE POLICY "Users can upload own profile avatars"
   ON storage.objects FOR INSERT TO authenticated
@@ -670,7 +633,6 @@ CREATE POLICY "Users can upload own profile avatars"
     bucket_id = 'profile-avatars'
     AND (storage.foldername(name))[1] = auth.uid()::text
   );
-
 DROP POLICY IF EXISTS "Users can update own profile avatars" ON storage.objects;
 CREATE POLICY "Users can update own profile avatars"
   ON storage.objects FOR UPDATE TO authenticated
@@ -682,7 +644,6 @@ CREATE POLICY "Users can update own profile avatars"
     bucket_id = 'profile-avatars'
     AND (storage.foldername(name))[1] = auth.uid()::text
   );
-
 DROP POLICY IF EXISTS "Users can delete own profile avatars" ON storage.objects;
 CREATE POLICY "Users can delete own profile avatars"
   ON storage.objects FOR DELETE TO authenticated
@@ -690,5 +651,4 @@ CREATE POLICY "Users can delete own profile avatars"
     bucket_id = 'profile-avatars'
     AND (storage.foldername(name))[1] = auth.uid()::text
   );
-
 COMMIT;

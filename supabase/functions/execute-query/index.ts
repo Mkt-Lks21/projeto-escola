@@ -1,12 +1,15 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  createJsonResponse,
+  enforceCors,
+  getRequestId,
+  getServiceSupabaseClient,
+  parseAndValidateBody,
+  rateLimitByUser,
+  requireAuthUser,
+  z,
+} from "../_shared/security.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
-
-// List of forbidden keywords for security
 const FORBIDDEN_KEYWORDS = [
   "INSERT",
   "DELETE",
@@ -20,89 +23,80 @@ const FORBIDDEN_KEYWORDS = [
   "EXECUTE",
 ];
 
+const querySchema = z.object({
+  query: z.string().min(1, "Query obrigatoria."),
+});
+
 function validateQuery(query: string): { valid: boolean; error?: string } {
   const upperQuery = query.toUpperCase().trim();
-  
-  // Check for forbidden keywords
+
   for (const keyword of FORBIDDEN_KEYWORDS) {
-    // Match keyword as whole word (not part of another word)
     const regex = new RegExp(`\\b${keyword}\\b`, "i");
     if (regex.test(upperQuery)) {
-      return { 
-        valid: false, 
-        error: `Operação "${keyword}" não é permitida. Apenas SELECT e CREATE VIEW são permitidos.` 
+      return {
+        valid: false,
+        error: `Operacao "${keyword}" nao permitida. Apenas SELECT e CREATE VIEW sao permitidos.`,
       };
     }
   }
 
-  // Must start with SELECT or CREATE VIEW
   const isSelect = upperQuery.startsWith("SELECT");
   const isCreateView = upperQuery.startsWith("CREATE VIEW") || upperQuery.startsWith("CREATE OR REPLACE VIEW");
-
   if (!isSelect && !isCreateView) {
-    return { 
-      valid: false, 
-      error: "A query deve começar com SELECT ou CREATE VIEW." 
-    };
+    return { valid: false, error: "A query deve comecar com SELECT ou CREATE VIEW." };
   }
 
   return { valid: true };
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+  const corsResponse = enforceCors(req);
+  if (corsResponse) return corsResponse;
+
+  if (req.method !== "POST") {
+    return createJsonResponse({ error: "Metodo nao permitido. Use POST." }, 405, req);
   }
 
+  const requestId = getRequestId(req);
+
   try {
-    const { query } = await req.json();
+    // service_role is only valid inside trusted server runtime (Edge Function).
+    const supabase = getServiceSupabaseClient();
+    const user = await requireAuthUser(req, supabase);
+    const rateLimit = await rateLimitByUser(user.id, "execute-query");
 
-    if (!query || typeof query !== "string") {
-      return new Response(
-        JSON.stringify({ error: "Query é obrigatória" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    if (!rateLimit.allowed) {
+      return createJsonResponse(
+        { error: "Rate limit excedido.", request_id: requestId, reset_at: rateLimit.resetAtEpochMs },
+        429,
+        req,
       );
     }
 
-    // Validate query
-    const validation = validateQuery(query);
+    const body = await parseAndValidateBody(req, querySchema);
+    const validation = validateQuery(body.query);
     if (!validation.valid) {
-      return new Response(
-        JSON.stringify({ error: validation.error }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return createJsonResponse({ error: validation.error, request_id: requestId }, 400, req);
     }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
-
-    // Execute the query using the database function
-    const { data, error } = await supabase.rpc("execute_safe_query", { 
-      query_text: query 
-    });
-
+    const { data, error } = await supabase.rpc("execute_safe_query", { query_text: body.query });
     if (error) {
-      return new Response(
-        JSON.stringify({ error: `Erro na execução: ${error.message}` }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return createJsonResponse({ error: `Erro na execucao: ${error.message}`, request_id: requestId }, 400, req);
     }
 
-    return new Response(
-      JSON.stringify({ 
-        success: true, 
+    return createJsonResponse(
+      {
+        success: true,
         data,
-        rowCount: Array.isArray(data) ? data.length : 0
-      }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        rowCount: Array.isArray(data) ? data.length : 0,
+        request_id: requestId,
+      },
+      200,
+      req,
+      { "x-request-id": requestId },
     );
   } catch (error) {
-    console.error("Execute query error:", error);
-    const errorMessage = error instanceof Error ? error.message : "Erro ao executar query";
-    return new Response(
-      JSON.stringify({ error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    const message = error instanceof Error ? error.message : "Erro ao executar query";
+    return createJsonResponse({ error: message, request_id: requestId }, 500, req, { "x-request-id": requestId });
   }
 });

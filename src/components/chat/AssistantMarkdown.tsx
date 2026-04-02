@@ -1,5 +1,7 @@
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeSanitize from "rehype-sanitize";
+import DOMPurify from "dompurify";
 import { cn } from "@/lib/utils";
 
 interface AssistantMarkdownProps {
@@ -8,10 +10,29 @@ interface AssistantMarkdownProps {
 }
 
 export default function AssistantMarkdown({ content, className }: AssistantMarkdownProps) {
+  const sanitizedMarkdown = DOMPurify.sanitize(content, {
+    ALLOWED_TAGS: [],
+    ALLOWED_ATTR: [],
+    KEEP_CONTENT: true,
+  });
+
+  const safeTransformUrl = (url: string, key: string, node: unknown) => {
+    const transformed = defaultUrlTransform(url);
+    if (!transformed) return "";
+
+    const lowered = transformed.trim().toLowerCase();
+    if (lowered.startsWith("javascript:") || lowered.startsWith("data:text/html")) {
+      return "";
+    }
+    return transformed;
+  };
+
   return (
     <div className={cn("ai-markdown", className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeSanitize]}
+        urlTransform={safeTransformUrl}
         components={{
           h1: ({ node: _node, ...props }) => <h1 {...props} />,
           h2: ({ node: _node, ...props }) => <h2 {...props} />,
@@ -24,7 +45,14 @@ export default function AssistantMarkdown({ content, className }: AssistantMarkd
           em: ({ node: _node, ...props }) => <em {...props} />,
           blockquote: ({ node: _node, ...props }) => <blockquote {...props} />,
           hr: ({ node: _node, ...props }) => <hr {...props} />,
-          a: ({ node: _node, ...props }) => <a {...props} />,
+          a: ({ node: _node, href, ...props }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+              {...props}
+            />
+          ),
           table: ({ node: _node, ...props }) => (
             <div className="ai-markdown-table-wrap">
               <table {...props} />
@@ -43,7 +71,7 @@ export default function AssistantMarkdown({ content, className }: AssistantMarkd
           pre: ({ node: _node, ...props }) => <pre {...props} />,
         }}
       >
-        {content}
+        {sanitizedMarkdown}
       </ReactMarkdown>
     </div>
   );

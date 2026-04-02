@@ -5,6 +5,9 @@ import { cn } from "@/lib/utils";
 
 // Format: { THEME_NAME: CSS_SELECTOR }
 const THEMES = { light: "", dark: ".dark" } as const;
+const SAFE_CSS_TOKEN = /^[a-zA-Z0-9_-]+$/;
+const SAFE_CSS_COLOR =
+  /^(#[0-9a-fA-F]{3,8}|rgb(a)?\([0-9.,%\s]+\)|hsl(a)?\([0-9.,%\s]+\)|var\(--[a-zA-Z0-9_-]+\)|[a-zA-Z]+)$/;
 
 export type ChartConfig = {
   [k in string]: {
@@ -37,7 +40,8 @@ const ChartContainer = React.forwardRef<
   }
 >(({ id, className, children, config, ...props }, ref) => {
   const uniqueId = React.useId();
-  const chartId = `chart-${id || uniqueId.replace(/:/g, "")}`;
+  const rawChartId = `chart-${id || uniqueId.replace(/:/g, "")}`;
+  const chartId = SAFE_CSS_TOKEN.test(rawChartId) ? rawChartId : `chart-${uniqueId.replace(/:/g, "")}`;
 
   return (
     <ChartContext.Provider value={{ config }}>
@@ -65,17 +69,25 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
     return null;
   }
 
+  const safeChartId = SAFE_CSS_TOKEN.test(id) ? id : "chart-fallback";
+
   return (
     <style
       dangerouslySetInnerHTML={{
         __html: Object.entries(THEMES)
           .map(
             ([theme, prefix]) => `
-${prefix} [data-chart=${id}] {
+${prefix} [data-chart=${safeChartId}] {
 ${colorConfig
   .map(([key, itemConfig]) => {
+    if (!SAFE_CSS_TOKEN.test(key)) {
+      return null;
+    }
     const color = itemConfig.theme?.[theme as keyof typeof itemConfig.theme] || itemConfig.color;
-    return color ? `  --color-${key}: ${color};` : null;
+    if (!color || !SAFE_CSS_COLOR.test(String(color).trim())) {
+      return null;
+    }
+    return `  --color-${key}: ${String(color).trim()};`;
   })
   .join("\n")}
 }

@@ -1,5 +1,4 @@
 BEGIN;
-
 CREATE OR REPLACE FUNCTION public.billing_get_my_usage_summary()
 RETURNS TABLE (
   user_id uuid,
@@ -32,8 +31,6 @@ BEGIN
   FROM public.billing_get_usage_snapshot(auth.uid(), now());
 END;
 $$;
-
 REVOKE ALL ON FUNCTION public.billing_get_my_usage_summary() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.billing_get_my_usage_summary() TO authenticated, service_role;
-
 COMMIT;

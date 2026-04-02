@@ -8,6 +8,7 @@ export interface ParsedChartPayload {
   success?: boolean;
   message?: string;
   warnings?: string[];
+  sql_debug?: string;
   plotly_figure?: {
     data?: unknown[];
     layout?: Record<string, unknown>;
@@ -22,6 +23,7 @@ export interface ParsedChartInsightPayload {
   analysis_scope?: "broad" | "specific";
   analysis_focus?: string;
   warnings?: string[];
+  sql_debug?: string;
 }
 
 export interface ParsedInsightPayload {
@@ -32,6 +34,7 @@ export interface ParsedInsightPayload {
   columns?: string[];
   rows?: Record<string, unknown>[];
   insight_text?: string;
+  sql_debug?: string;
 }
 
 export interface ParsedAssistantContent {

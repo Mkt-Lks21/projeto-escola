@@ -89,6 +89,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (error) throw error;
 
     localStorage.removeItem("currentConversationId");
+    Object.keys(localStorage)
+      .filter((key) => key.startsWith("sb-"))
+      .forEach((key) => localStorage.removeItem(key));
   }, []);
 
   const value = useMemo<AuthContextValue>(

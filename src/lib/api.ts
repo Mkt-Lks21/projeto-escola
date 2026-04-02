@@ -179,7 +179,7 @@ export async function fetchExternalMetadata(): Promise<DatabaseMetadata[]> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const headers = await getAuthenticatedFunctionHeaders();
 
-  const response = await fetch(`${supabaseUrl}/functions/v1/external-db-proxy`, {
+  const response = await fetch(`${supabaseUrl}/functions/v1/external-db-admin`, {
     method: "POST",
     headers,
     body: JSON.stringify({ action: "fetch-metadata" }),
@@ -217,7 +217,7 @@ export async function executeExternalQuery(query: string): Promise<any[]> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const headers = await getAuthenticatedFunctionHeaders();
 
-  const response = await fetch(`${supabaseUrl}/functions/v1/external-db-proxy`, {
+  const response = await fetch(`${supabaseUrl}/functions/v1/external-db-admin`, {
     method: "POST",
     headers,
     body: JSON.stringify({ action: "execute-query", query }),
@@ -235,7 +235,8 @@ export async function executeExternalQuery(query: string): Promise<any[]> {
 export async function sendChatMessage(
   messages: { role: string; content: string }[],
   conversationId: string,
-  agentId?: string
+  agentId?: string,
+  sqlDebug?: boolean
 ): Promise<Response> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const headers = await getAuthenticatedFunctionHeaders();
@@ -243,7 +244,7 @@ export async function sendChatMessage(
   return fetch(`${supabaseUrl}/functions/v1/chat`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ messages, conversationId, agentId }),
+    body: JSON.stringify({ messages, conversationId, agentId, sqlDebug }),
   });
 }
 
@@ -377,7 +378,7 @@ export async function testExternalConnection(): Promise<{
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const headers = await getAuthenticatedFunctionHeaders();
 
-  const response = await fetch(`${supabaseUrl}/functions/v1/external-db-proxy`, {
+  const response = await fetch(`${supabaseUrl}/functions/v1/external-db-admin`, {
     method: "POST",
     headers,
     body: JSON.stringify({ action: "test-connection" }),

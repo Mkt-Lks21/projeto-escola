@@ -1,37 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Message } from "@/types/database";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Play, Copy, Check, User, Bot, Loader2 } from "lucide-react";
+import { Copy, Check, User, Bot, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import QueryResultTable from "./QueryResultTable";
 import InsightResultPanel from "./InsightResultPanel";
 import ChartInsightPanel from "./ChartInsightPanel";
 import AssistantMarkdown from "./AssistantMarkdown";
 import Plot from "react-plotly.js";
 import type { Config as PlotlyConfig, Data as PlotlyData, Layout as PlotlyLayout } from "plotly.js";
-import { ParsedSqlBlock, parseAssistantContent } from "@/lib/chat/assistantContentParser";
+import { parseAssistantContent } from "@/lib/chat/assistantContentParser";
 import { useLocation } from "react-router-dom";
 
 interface ChatMessageProps {
   message: Message;
-  onExecuteQuery: (query: string) => Promise<any[]>;
   disableAutoExecute?: boolean;
 }
 
 export default function ChatMessage({
   message,
-  onExecuteQuery,
-  disableAutoExecute = false,
+  disableAutoExecute: _disableAutoExecute = false,
 }: ChatMessageProps) {
-  const [executingQueries, setExecutingQueries] = useState<Record<string, boolean>>({});
-  const [queryResults, setQueryResults] = useState<Record<string, any[]>>({});
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
-  const [attemptedQueries, setAttemptedQueries] = useState<Set<string>>(new Set());
-  const runningQueriesRef = useRef<Set<string>>(new Set());
-  const autoAttemptedRef = useRef<Set<string>>(new Set());
   const location = useLocation();
 
   const isUser = message.role === "user";
@@ -45,53 +37,13 @@ export default function ChatMessage({
       "";
 
     const value = rawValue.toLowerCase();
-    return value === "1" || value === "true" || value === "yes";
+    return value === "1" || value === "true" || value === "yes" || value === "on";
   }, [location.search]);
+
   const parsedContent = useMemo(
     () => (isUser ? null : parseAssistantContent(message.content || "")),
     [isUser, message.content],
   );
-
-  const toBlockKey = (block: ParsedSqlBlock) => `${message.id}-${block.id}`;
-
-  const executeSql = async (block: ParsedSqlBlock, showSuccessToast: boolean) => {
-    const key = toBlockKey(block);
-
-    if (runningQueriesRef.current.has(key)) return;
-
-    runningQueriesRef.current.add(key);
-    setAttemptedQueries((prev) => new Set(prev).add(key));
-    setExecutingQueries((prev) => ({ ...prev, [key]: true }));
-
-    try {
-      const results = await onExecuteQuery(block.query);
-      setQueryResults((prev) => ({ ...prev, [key]: results }));
-      if (showSuccessToast) {
-        toast.success("Query executada com sucesso!");
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Erro ao executar query");
-    } finally {
-      setExecutingQueries((prev) => ({ ...prev, [key]: false }));
-      runningQueriesRef.current.delete(key);
-    }
-  };
-
-  useEffect(() => {
-    if (isUser || disableAutoExecute || !parsedContent || !showSqlDebug || !parsedContent.allowSqlDebug) return;
-
-    for (const block of parsedContent.sqlBlocks) {
-      if (!block.autoExecute) continue;
-
-      const key = toBlockKey(block);
-      if (autoAttemptedRef.current.has(key)) {
-        continue;
-      }
-
-      autoAttemptedRef.current.add(key);
-      void executeSql(block, false);
-    }
-  }, [disableAutoExecute, isUser, parsedContent, showSqlDebug]);
 
   const handleCopy = async (code: string) => {
     await navigator.clipboard.writeText(code);
@@ -114,6 +66,39 @@ export default function ChatMessage({
     ? (chartPayload.plotly_figure.data as PlotlyData[])
     : [];
   const plotLayout = (chartPayload?.plotly_figure?.layout || {}) as Partial<PlotlyLayout>;
+  const sqlDebugQuery =
+    (typeof chartInsightPayload?.sql_debug === "string" ? chartInsightPayload.sql_debug : "") ||
+    (typeof chartPayload?.sql_debug === "string" ? chartPayload.sql_debug : "") ||
+    (typeof insightPayload?.sql_debug === "string" ? insightPayload.sql_debug : "");
+  const canRenderSqlDebug = showSqlDebug && sqlDebugQuery.trim().length > 0;
+  const sqlDebugBlock = canRenderSqlDebug ? (
+    <div className="space-y-3">
+      <div className="rounded-xl border border-white/35 glass-subtle p-3 text-xs text-muted-foreground">
+        SQL debug somente leitura. A execucao de queries no frontend foi desativada.
+      </div>
+      <div className="rounded-2xl glass-card overflow-hidden">
+        <div className="px-3 py-2 border-b border-white/35 glass-subtle flex items-center justify-between gap-2">
+          <div className="text-xs font-semibold text-muted-foreground">SQL gerado</div>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-7 text-xs"
+            onClick={() => void handleCopy(sqlDebugQuery)}
+          >
+            {copiedCode === sqlDebugQuery ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+          </Button>
+        </div>
+        <SyntaxHighlighter
+          style={vscDarkPlus}
+          language="sql"
+          PreTag="div"
+          className="!m-0 !rounded-none"
+        >
+          {sqlDebugQuery}
+        </SyntaxHighlighter>
+      </div>
+    </div>
+  ) : null;
 
   return (
     <div
@@ -135,9 +120,15 @@ export default function ChatMessage({
         {isUser ? (
           <p className="text-sm leading-6 whitespace-pre-wrap break-words">{message.content}</p>
         ) : isChartInsightContent ? (
-          <ChartInsightPanel payload={chartInsightPayload} />
+          <div className="space-y-4">
+            <ChartInsightPanel payload={chartInsightPayload} />
+            {sqlDebugBlock}
+          </div>
         ) : isInsightContent ? (
-          <InsightResultPanel payload={insightPayload} />
+          <div className="space-y-4">
+            <InsightResultPanel payload={insightPayload} />
+            {sqlDebugBlock}
+          </div>
         ) : isChartContent ? (
           <div className="space-y-4">
             {!chartPayload ? (
@@ -176,75 +167,41 @@ export default function ChatMessage({
                 {chartPayload.warnings.join(" ")}
               </div>
             )}
+
+            {sqlDebugBlock}
           </div>
         ) : sqlBlocks.length > 0 && canRenderSql ? (
           <div className="space-y-4">
-            {plainAssistantText && (
-              <AssistantMarkdown content={plainAssistantText} />
-            )}
+            {plainAssistantText && <AssistantMarkdown content={plainAssistantText} />}
 
-            {sqlBlocks.map((block, index) => {
-              const key = toBlockKey(block);
-              const isExecuting = Boolean(executingQueries[key]);
-              const hasAttempted = attemptedQueries.has(key);
-              const hasResults = Object.prototype.hasOwnProperty.call(queryResults, key);
+            <div className="rounded-xl border border-white/35 glass-subtle p-3 text-xs text-muted-foreground">
+              SQL debug somente leitura. A execucao de queries no frontend foi desativada.
+            </div>
 
-              return (
-                <div key={key} className="rounded-2xl glass-card overflow-hidden">
-                  <div className="px-3 py-2 border-b border-white/35 glass-subtle flex items-center justify-between gap-2">
-                    <div className="text-xs font-semibold text-muted-foreground">
-                      {canRenderSql ? `SQL ${index + 1}` : `Consulta ${index + 1}`}{" "}
-                      {block.autoExecute ? "(Auto)" : ""}
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        className="h-7 text-xs"
-                        onClick={() => void executeSql(block, true)}
-                        disabled={isExecuting}
-                      >
-                        {isExecuting ? (
-                          <Loader2 className="w-3 h-3 animate-spin mr-1" />
-                        ) : (
-                          <Play className="w-3 h-3 mr-1" />
-                        )}
-                        {hasResults ? "Reexecutar" : "Executar"}
-                      </Button>
-                      {canRenderSql && (
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          className="h-7 text-xs"
-                          onClick={() => void handleCopy(block.query)}
-                        >
-                          {copiedCode === block.query ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-
-                  {canRenderSql && (
-                    <SyntaxHighlighter
-                      style={vscDarkPlus}
-                      language="sql"
-                      PreTag="div"
-                      className="!m-0 !rounded-none"
-                    >
-                      {block.query}
-                    </SyntaxHighlighter>
-                  )}
-
-                  <div className="px-3 pb-3">
-                    <QueryResultTable
-                      results={queryResults[key]}
-                      isLoading={isExecuting}
-                      hasAttempted={hasAttempted}
-                    />
-                  </div>
+            {sqlBlocks.map((block, index) => (
+              <div key={`${message.id}-${block.id}`} className="rounded-2xl glass-card overflow-hidden">
+                <div className="px-3 py-2 border-b border-white/35 glass-subtle flex items-center justify-between gap-2">
+                  <div className="text-xs font-semibold text-muted-foreground">SQL {index + 1}</div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-7 text-xs"
+                    onClick={() => void handleCopy(block.query)}
+                  >
+                    {copiedCode === block.query ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  </Button>
                 </div>
-              );
-            })}
+
+                <SyntaxHighlighter
+                  style={vscDarkPlus}
+                  language="sql"
+                  PreTag="div"
+                  className="!m-0 !rounded-none"
+                >
+                  {block.query}
+                </SyntaxHighlighter>
+              </div>
+            ))}
           </div>
         ) : (
           <AssistantMarkdown
