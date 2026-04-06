@@ -7,7 +7,6 @@ import {
   getServiceSupabaseClient,
   parseAndValidateBody,
   rateLimitByUser,
-  requireAuthUser,
   z,
 } from "../_shared/security.ts";
 
@@ -53,7 +52,21 @@ function createPayloadResponse(payload: ProxyResponse, status: number, req: Requ
   return createJsonResponse({ ...payload, request_id: requestId }, status, req, { "x-request-id": requestId });
 }
 
-serve(async (req) => {
+export function requireInternalProxyKey(req: Request): string {
+  const expected = Deno.env.get("INTERNAL_PROXY_KEY")?.trim();
+  if (!expected) {
+    throw new Error("INTERNAL_PROXY_KEY nao configurado.");
+  }
+
+  const provided = req.headers.get("x-internal-proxy-key")?.trim();
+  if (!provided || provided !== expected) {
+    throw new Error("Missing or invalid internal proxy key.");
+  }
+
+  return expected;
+}
+
+export async function handleExternalDbProxyRequest(req: Request): Promise<Response> {
   const corsResponse = enforceCors(req);
   if (corsResponse) return corsResponse;
 
@@ -65,8 +78,8 @@ serve(async (req) => {
 
   try {
     const supabase = getServiceSupabaseClient();
-    const user = await requireAuthUser(req, supabase);
-    const rateLimit = await rateLimitByUser(user.id, "external-db-proxy");
+    requireInternalProxyKey(req);
+    const rateLimit = await rateLimitByUser("internal", "external-db-proxy");
     if (!rateLimit.allowed) {
       return createJsonResponse(
         { error: "Rate limit excedido.", request_id: requestId, reset_at: rateLimit.resetAtEpochMs },
@@ -83,7 +96,7 @@ serve(async (req) => {
       .map((item) => item.trim())
       .filter(Boolean);
 
-    if (!delphiApiUrl || !delphiApiToken || !delphiAuthBearer) {
+    if (!delphiApiUrl || !delphiApiToken ) {
       return createPayloadResponse(
         {
           success: false,
@@ -105,27 +118,42 @@ serve(async (req) => {
     const rowspPage = toStringWithFallback(body.rowspPage, "15");
     const empresa = toStringWithFallback(body.empresa, "1");
 
-    const params = new URLSearchParams();
+    const params = new FormData();
     params.append("function", "1");
-    params.append("tokenapi", delphiApiToken);
+    params.append("TokenAPI", delphiApiToken);
     params.append("fields", body.fields.trim());
     params.append("tables", body.tables.trim());
     params.append("cond", body.cond.trim());
     params.append("order", order);
     params.append("pagenumber", pageNumber);
-    params.append("rowsppage", rowspPage);
+    params.append("RowspPage", rowspPage);
     params.append("empresa", empresa);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort("upstream timeout"), 12000);
 
+    const curlCommand = `curl -k -X POST '${validatedUrl.href}' \\
+  -H 'Authorization: Bearer ${delphiAuthBearer}' \\
+  -F 'function=1' \\
+  -F 'TokenAPI=${delphiApiToken}' \\
+  -F 'fields=${body.fields.trim()}' \\
+  -F 'tables=${body.tables.trim()}' \\
+  -F 'cond=${body.cond.trim()}' \\
+  -F 'order=${order}' \\
+  -F 'pagenumber=${pageNumber}' \\
+  -F 'RowspPage=${rowspPage}' \\
+  -F 'empresa=${empresa}'`;
+    console.log("[DELPHI CURL COMMAND]\n" + curlCommand);
+
+    const headers: Record<string, string> = {};
+    if (delphiAuthBearer && delphiAuthBearer.trim() !== "") {
+      headers["Authorization"] = `Bearer ${delphiAuthBearer}`;
+    }
+
     const delphiResponse = await fetch(validatedUrl, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${delphiAuthBearer}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: params.toString(),
+      headers,
+      body: params,
       redirect: "manual",
       signal: controller.signal,
     }).finally(() => clearTimeout(timeout));
@@ -166,7 +194,7 @@ serve(async (req) => {
           rowCount: 0,
           error: typeof parsedBody?.error === "string" ? parsedBody.error : rawBody || `Erro upstream (${delphiResponse.status}).`,
         },
-        delphiResponse.status,
+        502,
         req,
         requestId,
       );
@@ -200,4 +228,8 @@ serve(async (req) => {
     const message = error instanceof Error ? error.message : "Erro interno no proxy Delphi.";
     return createPayloadResponse({ success: false, data: [], rowCount: 0, error: message }, 500, req, requestId);
   }
-});
+}
+
+if (import.meta.main) {
+  serve(handleExternalDbProxyRequest);
+}

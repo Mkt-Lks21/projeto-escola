@@ -1,7 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { z } from "https://esm.sh/zod@3.25.76";
 
-const DEFAULT_ALLOWED_HEADERS = "authorization, x-client-info, apikey, content-type, x-request-id";
+const DEFAULT_ALLOWED_HEADERS = "authorization, x-client-info, apikey, content-type, x-request-id, x-internal-proxy-key";
 const PRIVATE_IPV4_RANGES = [
   /^10\./,
   /^127\./,
