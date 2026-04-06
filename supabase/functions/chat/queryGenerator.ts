@@ -14,6 +14,18 @@ export interface QueryGeneratorOutput {
   rowspPage?: number;
   chart_type?: "bar" | "line" | "pie" | "scatter";
   chart_title?: string;
+  failureCode?:
+    | "missing_api_key"
+    | "provider_http_error"
+    | "provider_invalid_json"
+    | "empty_result"
+    | "result_invalid_json"
+    | "incomplete_payload"
+    | "network_error"
+    | "unexpected_error";
+  failureDetail?: string;
+  failureHttpStatus?: number;
+  retriable?: boolean;
   usage: TokenUsage;
   shouldFallback: boolean;
 }
@@ -43,6 +55,76 @@ function parseResponseText(rawData: any): string {
     .filter((part: string) => part.trim().length > 0);
 
   return textParts.join("\n").trim();
+}
+
+function safeJsonParse(text: string): any | null {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function compactText(value: string, maxLength = 320): string {
+  const normalized = (value || "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
+function extractProviderErrorMessage(rawData: any, rawText: string): string {
+  if (typeof rawData?.error?.message === "string") {
+    return compactText(rawData.error.message);
+  }
+  if (typeof rawData?.message === "string") {
+    return compactText(rawData.message);
+  }
+  return compactText(rawText || "Erro desconhecido do provedor.");
+}
+
+function isRetriableHttpStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 429 || status >= 500;
+}
+
+class QueryGeneratorFailure extends Error {
+  code:
+    | "provider_http_error"
+    | "provider_invalid_json"
+    | "empty_result"
+    | "result_invalid_json"
+    | "incomplete_payload"
+    | "network_error"
+    | "unexpected_error";
+  status?: number;
+  detail?: string;
+  retriable: boolean;
+  usage: TokenUsage;
+
+  constructor(params: {
+    message: string;
+    code:
+      | "provider_http_error"
+      | "provider_invalid_json"
+      | "empty_result"
+      | "result_invalid_json"
+      | "incomplete_payload"
+      | "network_error"
+      | "unexpected_error";
+    status?: number;
+    detail?: string;
+    retriable: boolean;
+    usage?: TokenUsage;
+  }) {
+    super(params.message);
+    this.name = "QueryGeneratorFailure";
+    this.code = params.code;
+    this.status = params.status;
+    this.detail = params.detail;
+    this.retriable = params.retriable;
+    this.usage = params.usage || emptyUsage();
+  }
 }
 
 function toTrimmedString(value: unknown): string | undefined {
@@ -462,6 +544,9 @@ export async function generateSqlQuery({ userMessage, activeSchemas }: QueryGene
       error: "GEMINI_API_KEY nao configurada.",
       usage: emptyUsage(),
       shouldFallback: true,
+      failureCode: "missing_api_key",
+      failureDetail: "GEMINI_API_KEY nao configurada.",
+      retriable: false,
     };
   }
 
@@ -500,19 +585,49 @@ export async function generateSqlQuery({ userMessage, activeSchemas }: QueryGene
     });
 
     const rawText = await response.text();
-    const rawData = rawText ? JSON.parse(rawText) : {};
+    const rawData = rawText ? safeJsonParse(rawText) : {};
+    if (rawText && !rawData) {
+      throw new QueryGeneratorFailure({
+        message: "Query generator retornou JSON invalido.",
+        code: "provider_invalid_json",
+        detail: compactText(rawText),
+        retriable: true,
+      });
+    }
     const usage = extractGeminiUsage(rawData?.usageMetadata);
 
     if (!response.ok) {
-      throw new Error(`Query generator Gemini falhou com status ${response.status}.`);
+      throw new QueryGeneratorFailure({
+        message: `Query generator Gemini falhou com status ${response.status}.`,
+        code: "provider_http_error",
+        status: response.status,
+        detail: extractProviderErrorMessage(rawData, rawText),
+        retriable: isRetriableHttpStatus(response.status),
+        usage,
+      });
     }
 
     const resultText = parseResponseText(rawData);
     if (!resultText) {
-      throw new Error("Query generator retornou payload vazio.");
+      throw new QueryGeneratorFailure({
+        message: "Query generator retornou payload vazio.",
+        code: "empty_result",
+        detail: "Resposta sem campo de texto util no candidate principal.",
+        retriable: true,
+        usage,
+      });
     }
 
-    const parsed = JSON.parse(resultText);
+    const parsed = safeJsonParse(resultText);
+    if (!parsed) {
+      throw new QueryGeneratorFailure({
+        message: "Payload do query generator nao e JSON valido.",
+        code: "result_invalid_json",
+        detail: compactText(resultText),
+        retriable: true,
+        usage,
+      });
+    }
 
     const domainError = toTrimmedString(parsed?.error);
     if (domainError) {
@@ -528,7 +643,13 @@ export async function generateSqlQuery({ userMessage, activeSchemas }: QueryGene
     const rawCond = toTrimmedString(parsed?.cond);
 
     if (!fields || !tables || !rawCond) {
-      throw new Error("Payload do gerador veio sem fields/tables/cond.");
+      throw new QueryGeneratorFailure({
+        message: "Payload do gerador veio sem fields/tables/cond.",
+        code: "incomplete_payload",
+        detail: compactText(resultText),
+        retriable: true,
+        usage,
+      });
     }
 
     const normalizedPayload = normalizeQueryPayload({
@@ -569,11 +690,38 @@ export async function generateSqlQuery({ userMessage, activeSchemas }: QueryGene
       shouldFallback: false,
     };
   } catch (error) {
+    if (error instanceof QueryGeneratorFailure) {
+      console.warn("Erro no Query Generator Swarm:", {
+        code: error.code,
+        status: error.status ?? null,
+        retriable: error.retriable,
+        detail: compactText(error.detail || error.message),
+      });
+      return {
+        error: "Falha interna ao montar consulta SQL Server.",
+        usage: error.usage || emptyUsage(),
+        shouldFallback: true,
+        failureCode: error.code,
+        failureDetail: compactText(error.detail || error.message),
+        failureHttpStatus: error.status,
+        retriable: error.retriable,
+      };
+    }
+
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const normalizedMessage = compactText(rawMessage);
+    const looksNetworkError =
+      error instanceof TypeError ||
+      /\b(network|fetch|timeout|timed out|socket|dns|enotfound|econnrefused)\b/i.test(normalizedMessage);
+    const failureCode = looksNetworkError ? "network_error" : "unexpected_error";
     console.warn("Erro no Query Generator Swarm:", error);
     return {
       error: "Falha interna ao montar consulta SQL Server.",
       usage: emptyUsage(),
       shouldFallback: true,
+      failureCode,
+      failureDetail: normalizedMessage,
+      retriable: true,
     };
   }
 }

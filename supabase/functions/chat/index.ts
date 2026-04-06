@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { routeToSpecialist } from "./supervisor.ts";
-import { generateSqlQuery } from "./queryGenerator.ts";
+import { generateSqlQuery, type QueryGeneratorOutput } from "./queryGenerator.ts";
 import { resolveSchemas } from "./dictionaries/index.ts";
 import { createCorsHeaders, enforceCors, getRequestId, rateLimitByUser } from "../_shared/security.ts";
 
@@ -12,6 +12,9 @@ const CHART_INSIGHT_CONTENT_TAG = "[CHART_INSIGHT_CONTENT]";
 const MAX_INSIGHT_ROWS = 200;
 const INSIGHT_TEMPERATURE = 0.4;
 const USAGE_SAFETY_MARGIN_TOKENS = 2000;
+const QUERY_GENERATOR_MAX_RETRIES = 1;
+export const QUERY_GENERATOR_USER_FRIENDLY_ERROR =
+  "Nao consegui montar a consulta agora. Tente reformular sua pergunta com mais contexto (periodo, entidade ou filtro).";
 
 const CHART_TYPES = ["bar", "line", "pie", "scatter"] as const;
 const INSIGHT_SCOPES = ["broad", "specific"] as const;
@@ -270,7 +273,7 @@ const GEMINI_TOOLS = [
   },
 ];
 
-serve(async (req) => {
+export async function handleChatRequest(req: Request): Promise<Response> {
   const corsResponse = enforceCors(req);
   if (corsResponse) return corsResponse;
 
@@ -282,19 +285,21 @@ serve(async (req) => {
     const requestId = getRequestId(req);
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const internalProxyKey = Deno.env.get("INTERNAL_PROXY_KEY");
     // service_role is restricted to server-side execution and privileged RPC calls.
     // Never expose this key to frontend clients.
 
-    if (!supabaseUrl || !supabaseKey) {
+    if (!supabaseUrl || !supabaseKey || !internalProxyKey) {
       return createJsonResponse(
         req,
-        { error: "Segredos SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY sao obrigatorios." },
+        { error: "Segredos SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY e INTERNAL_PROXY_KEY sao obrigatorios." },
         500,
       );
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
-    const authenticatedUser = await authenticateRequestUser(req, supabase);
+    const accessToken = extractBearerToken(req);
+    const authenticatedUser = await authenticateRequestUser(accessToken, supabase);
 
     if (!authenticatedUser) {
       return createJsonResponse(
@@ -436,6 +441,7 @@ serve(async (req) => {
 
     const swarmResult = await runSwarmFlow({
       req,
+      requestId,
       settings: activeSettings,
       messages,
       userMessage: lastUserMessage,
@@ -443,6 +449,8 @@ serve(async (req) => {
       chartAndInsightRequested,
       supabaseUrl,
       supabaseServiceKey: supabaseKey,
+      userAccessToken: accessToken!,
+      internalProxyKey,
       sqlDebug: sqlDebugRequested,
     });
 
@@ -545,7 +553,11 @@ serve(async (req) => {
     const errorMessage = error instanceof Error ? error.message : "Erro interno do servidor";
     return createJsonResponse(req, { error: errorMessage }, 500);
   }
-});
+}
+
+if (import.meta.main) {
+  serve(handleChatRequest);
+}
 
 function normalizeRequestMessages(messages: unknown): ChatMessage[] {
   if (!Array.isArray(messages)) {
@@ -583,7 +595,21 @@ function normalizeIntentText(text: string): string {
     .toLowerCase();
 }
 
-function detectUserIntent(lastUserMessage: string): UserIntent {
+function hasExplicitChartRequest(normalizedIntentText: string): boolean {
+  if (!normalizedIntentText) return false;
+  return (
+    /\b(grafico|graficos|chart|charts|plot|plots|visualizacao|visualizacoes|dashboard|dashboards|pizza|barras|scatter|dispersao)\b/.test(
+      normalizedIntentText,
+    ) ||
+    /\btendencia visual\b/.test(normalizedIntentText)
+  );
+}
+
+export function shouldGenerateChartResponse(userIntent: UserIntent): boolean {
+  return userIntent === "chart";
+}
+
+export function detectUserIntent(lastUserMessage: string): UserIntent {
   if (!lastUserMessage) {
     return "default";
   }
@@ -602,9 +628,7 @@ function detectUserIntent(lastUserMessage: string): UserIntent {
     return "explicit_sql";
   }
 
-  const asksChart =
-    /\b(grafico|plot|visualizacao|dashboard|pizza|barras|linha|scatter|dispersao)\b/.test(normalized) ||
-    /\btendencia visual\b/.test(normalized);
+  const asksChart = hasExplicitChartRequest(normalized);
   if (asksChart) {
     return "chart";
   }
@@ -793,10 +817,7 @@ function detectChartAndInsightIntent(lastUserMessage: string): boolean {
     return false;
   }
 
-  const asksChart =
-    /\b(grafico|plot|visualizacao|dashboard|pizza|barras|linha|scatter|dispersao)\b/.test(
-      normalized,
-    ) || /\btendencia visual\b/.test(normalized);
+  const asksChart = hasExplicitChartRequest(normalized);
 
   const asksInsight =
     /\b(analise|analisar|insight|resumo|tendencia|desempenho|diagnostico|explicar|avaliar|interpretar)\b/.test(
@@ -806,18 +827,87 @@ function detectChartAndInsightIntent(lastUserMessage: string): boolean {
   return asksChart && asksInsight;
 }
 
-async function invokeDelphiProxy(
+function sanitizeProviderErrorSnippet(detail?: string, maxLength = 220): string | null {
+  if (typeof detail !== "string") return null;
+  const normalized = detail.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
+export async function generateSqlQueryWithRetry(params: {
+  userMessage: string;
+  activeSchemas: string;
+  requestId?: string;
+  maxRetries?: number;
+  queryFn?: typeof generateSqlQuery;
+}): Promise<{ queryPayload: QueryGeneratorOutput; usage: TokenUsage; attempts: number }> {
+  const { userMessage, activeSchemas, requestId, queryFn = generateSqlQuery } = params;
+  const maxRetries = Math.max(0, params.maxRetries ?? QUERY_GENERATOR_MAX_RETRIES);
+  const totalAttempts = maxRetries + 1;
+  let totalUsage = emptyUsage();
+  let lastPayload: QueryGeneratorOutput | null = null;
+
+  for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
+    const payload = await queryFn({ userMessage, activeSchemas });
+    totalUsage = mergeUsage(totalUsage, payload.usage);
+    lastPayload = payload;
+
+    if (!payload.shouldFallback) {
+      return { queryPayload: payload, usage: totalUsage, attempts: attempt };
+    }
+
+    const canRetry = attempt < totalAttempts && (payload.retriable ?? true);
+    const logPayload = {
+      request_id: requestId ?? null,
+      attempt,
+      reason_code: payload.failureCode ?? "unknown_failure",
+      http_status: payload.failureHttpStatus ?? null,
+      retriable: payload.retriable ?? null,
+      provider_error_snippet: sanitizeProviderErrorSnippet(payload.failureDetail),
+    };
+
+    if (canRetry) {
+      console.warn("[chat][swarm][query_generator_failed_retrying]", logPayload);
+      continue;
+    }
+
+    console.error("[chat][swarm][query_generator_failed_final]", logPayload);
+    return { queryPayload: payload, usage: totalUsage, attempts: attempt };
+  }
+
+  return {
+    queryPayload: lastPayload || {
+      error: "Falha interna ao montar consulta SQL Server.",
+      usage: emptyUsage(),
+      shouldFallback: true,
+      failureCode: "unexpected_error",
+      failureDetail: "Retry loop concluido sem payload final valido.",
+      retriable: false,
+    },
+    usage: totalUsage,
+    attempts: totalAttempts,
+  };
+}
+
+export async function invokeDelphiProxy(
   supabaseUrl: string,
   supabaseServiceKey: string,
+  userAccessToken: string,
+  internalProxyKey: string,
   payload: DelphiProxyPayload,
 ): Promise<DelphiProxyResult> {
-  const proxyUrl = `${supabaseUrl}/functions/v1/external-db-proxy`;
+  const baseUrl = supabaseUrl.endsWith("/") ? supabaseUrl.slice(0, -1) : supabaseUrl;
+  const proxyUrl = `${baseUrl}/functions/v1/external-db-proxy`;
   const response = await fetch(proxyUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       apikey: supabaseServiceKey,
-      Authorization: `Bearer ${supabaseServiceKey}`,
+      Authorization: `Bearer ${userAccessToken}`,
+      "x-internal-proxy-key": internalProxyKey,
     },
     body: JSON.stringify(payload),
   });
@@ -845,6 +935,7 @@ async function invokeDelphiProxy(
 
 async function runSwarmFlow(params: {
   req: Request;
+  requestId: string;
   settings: ActiveSettings;
   messages: ChatMessage[];
   userMessage: string;
@@ -852,10 +943,13 @@ async function runSwarmFlow(params: {
   chartAndInsightRequested: boolean;
   supabaseUrl: string;
   supabaseServiceKey: string;
+  userAccessToken: string;
+  internalProxyKey: string;
   sqlDebug: boolean;
 }): Promise<SwarmFlowResult> {
   const {
     req,
+    requestId,
     settings,
     messages,
     userMessage,
@@ -863,6 +957,8 @@ async function runSwarmFlow(params: {
     chartAndInsightRequested,
     supabaseUrl,
     supabaseServiceKey,
+    userAccessToken,
+    internalProxyKey,
     sqlDebug,
   } = params;
 
@@ -905,14 +1001,21 @@ async function runSwarmFlow(params: {
       throw new SwarmFlowError("SWARM_SCHEMA_RESOLUTION_EMPTY", usage);
     }
 
-    const queryPayload = await generateSqlQuery({
+    const queryAttempt = await generateSqlQueryWithRetry({
       userMessage,
       activeSchemas,
+      requestId,
+      maxRetries: QUERY_GENERATOR_MAX_RETRIES,
     });
-    usage = mergeUsage(usage, queryPayload.usage);
+    usage = mergeUsage(usage, queryAttempt.usage);
+    const queryPayload = queryAttempt.queryPayload;
 
     if (queryPayload.shouldFallback) {
-      throw new SwarmFlowError("SWARM_QUERY_GENERATOR_FAILED", usage);
+      return {
+        response: createTextSseResponse(req, QUERY_GENERATOR_USER_FRIENDLY_ERROR),
+        usage,
+        selectedWorkers: supervisorResult.selectedWorkers,
+      };
     }
 
     if (queryPayload.error) {
@@ -927,14 +1030,15 @@ async function runSwarmFlow(params: {
       throw new SwarmFlowError("SWARM_QUERY_GENERATOR_INCOMPLETE", usage);
     }
 
+    const shouldGenerateChart = shouldGenerateChartResponse(userIntent);
     let effectiveQueryPayload: SwarmQueryPayload = {
       fields: queryPayload.fields,
       tables: queryPayload.tables,
       cond: queryPayload.cond,
       order: queryPayload.order,
       rowspPage: queryPayload.rowspPage,
-      chart_type: queryPayload.chart_type,
-      chart_title: queryPayload.chart_title,
+      chart_type: shouldGenerateChart ? queryPayload.chart_type : undefined,
+      chart_title: shouldGenerateChart ? queryPayload.chart_title : undefined,
     };
     console.log("[chat][swarm] data_source=delphi_proxy", {
       workers: supervisorResult.selectedWorkers,
@@ -953,7 +1057,7 @@ async function runSwarmFlow(params: {
       `[SWARM_GUARDRAIL] atendimentoTipoApplied=${initialGuardrail.atendimentoTipoApplied} reason=${initialGuardrail.reason}`,
     );
 
-    let proxyResult = await invokeDelphiProxy(supabaseUrl, supabaseServiceKey, {
+    let proxyResult = await invokeDelphiProxy(supabaseUrl, supabaseServiceKey, userAccessToken, internalProxyKey, {
       fields: effectiveQueryPayload.fields,
       tables: effectiveQueryPayload.tables,
       cond: effectiveQueryPayload.cond,
@@ -988,8 +1092,8 @@ async function runSwarmFlow(params: {
           cond: retryQueryPayload.cond,
           order: retryQueryPayload.order,
           rowspPage: retryQueryPayload.rowspPage,
-          chart_type: retryQueryPayload.chart_type,
-          chart_title: retryQueryPayload.chart_title,
+          chart_type: shouldGenerateChart ? retryQueryPayload.chart_type : undefined,
+          chart_title: shouldGenerateChart ? retryQueryPayload.chart_title : undefined,
         };
         const retryGuardrail = applySwarmGuardrailToQueryPayload(effectiveQueryPayload, userMessage);
         effectiveQueryPayload = retryGuardrail.payload;
@@ -1007,7 +1111,7 @@ async function runSwarmFlow(params: {
           `[SWARM_GUARDRAIL] atendimentoTipoApplied=${retryGuardrail.atendimentoTipoApplied} reason=${retryGuardrail.reason}`,
         );
 
-        proxyResult = await invokeDelphiProxy(supabaseUrl, supabaseServiceKey, {
+        proxyResult = await invokeDelphiProxy(supabaseUrl, supabaseServiceKey, userAccessToken, internalProxyKey, {
           fields: effectiveQueryPayload.fields,
           tables: effectiveQueryPayload.tables,
           cond: effectiveQueryPayload.cond,
@@ -1038,7 +1142,7 @@ async function runSwarmFlow(params: {
         })
       : undefined;
 
-    if (userIntent === "chart" || effectiveQueryPayload.chart_type) {
+    if (shouldGenerateChart) {
       let chartRows = queryData;
       if (isIndexChartNormalizationFallbackEnabled()) {
         const normalizedChartData = normalizeChartDatasetForYearMonth(queryData);
@@ -1178,8 +1282,7 @@ function extractBearerToken(req: Request): string | null {
   return token.trim() || null;
 }
 
-async function authenticateRequestUser(req: Request, supabase: any): Promise<AuthenticatedUser | null> {
-  const accessToken = extractBearerToken(req);
+async function authenticateRequestUser(accessToken: string | null, supabase: any): Promise<AuthenticatedUser | null> {
   if (!accessToken) {
     return null;
   }
@@ -2044,4 +2147,34 @@ function safeJsonParse(text: string): any | null {
   } catch {
     return null;
   }
+}
+
+async function generateChartFromPython(
+  rows: Record<string, unknown>[],
+  args: any,
+): Promise<Record<string, unknown>> {
+  const pythonApiUrl = Deno.env.get("PYTHON_API_URL") || DEFAULT_PYTHON_API_URL;
+  const internalToken = Deno.env.get("PYTHON_API_TOKEN") || "";
+
+  const payload = {
+    data: rows,
+    chart_intent: args.chart_type || "auto",
+    title: args.chart_title || "Grafico",
+  };
+
+  const response = await fetch(`${pythonApiUrl}/generate-chart`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Internal-Token": internalToken,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const rawBody = await response.text();
+    throw new SwarmFlowError(`Falha na API Python de graficos (status ${response.status}): ${rawBody}`, emptyUsage());
+  }
+
+  return response.json();
 }
