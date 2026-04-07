@@ -223,8 +223,16 @@ export function assertOutboundUrlAllowed(rawUrl: string, allowlist: string[]): U
   }
 
   const hostname = parsed.hostname.toLowerCase();
-  const normalizedAllowlist = allowlist.map((h) => h.trim().toLowerCase()).filter(Boolean);
-  if (!normalizedAllowlist.includes(hostname)) {
+  const host = parsed.host.toLowerCase();
+  const origin = parsed.origin.toLowerCase();
+  const normalizedAllowlist = allowlist
+    .flatMap((entry) => normalizeAllowlistEntry(entry))
+    .filter(Boolean);
+  const allowed = normalizedAllowlist.some((entry) => {
+    return entry === hostname || entry === host || entry === origin;
+  });
+
+  if (!allowed) {
     throw new Error("Host de destino nao permitido pelo allowlist.");
   }
 
@@ -233,6 +241,24 @@ export function assertOutboundUrlAllowed(rawUrl: string, allowlist: string[]): U
   }
 
   return parsed;
+}
+
+function normalizeAllowlistEntry(entry: string): string[] {
+  const trimmed = entry.trim().toLowerCase();
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.includes("://")) {
+    try {
+      const parsed = new URL(trimmed);
+      return [parsed.hostname.toLowerCase(), parsed.host.toLowerCase(), parsed.origin.toLowerCase()];
+    } catch {
+      return [trimmed];
+    }
+  }
+
+  return [trimmed];
 }
 
 export { z };

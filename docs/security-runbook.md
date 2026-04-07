@@ -5,7 +5,7 @@
 2. Rotate Supabase JWT secret (forces token/session invalidation).
 3. Rotate `anon/publishable` key if exposure scope requires.
 4. Rotate all external integration secrets:
-   - `DELPHI_API_URL` / `DELPHI_API_TOKEN` / `DELPHI_AUTH_BEARER`
+   - `DELPHI_API_URL` / `DELPHI_API_TOKEN` / `DELPHI_AUTH_URL`
    - `GEMINI_API_KEY`
    - `OPENAI_API_KEY`
    - `EXTERNAL_SUPABASE_SERVICE_KEY`
