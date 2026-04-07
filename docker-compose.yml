@@ -9,6 +9,8 @@ services:
         VITE_BACKEND_API_URL: ${VITE_BACKEND_API_URL}
     depends_on:
       - delphi-proxy
+      - chat-proxy
+      - admin-proxy
     ports:
       - "${WEB_HOST_PORT:-8080}:80"
     restart: unless-stopped
@@ -21,6 +23,16 @@ services:
       - ./deploy/vps.env
     expose:
       - "8787"
+    restart: unless-stopped
+
+  chat-proxy:
+    build:
+      context: .
+      dockerfile: services/chat-proxy/Dockerfile
+    env_file:
+      - ./deploy/vps.env
+    expose:
+      - "8789"
     restart: unless-stopped
 
   admin-proxy:

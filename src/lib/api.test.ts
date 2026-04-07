@@ -23,9 +23,10 @@ describe("api auth headers", () => {
     vi.clearAllMocks();
     vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
     vi.stubEnv("VITE_SUPABASE_PUBLISHABLE_KEY", "pk-test");
+    vi.stubEnv("VITE_BACKEND_API_URL", "/api");
   });
 
-  it("sends access token in function authorization header", async () => {
+  it("sends access token in chat endpoint authorization header", async () => {
     mockedSupabase.auth.getSession.mockResolvedValue({
       data: { session: { access_token: "token-123" } },
       error: null,
@@ -38,7 +39,8 @@ describe("api auth headers", () => {
     await sendChatMessage([{ role: "user", content: "oi" }], "conv-1");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [, options] = fetchMock.mock.calls[0];
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/chat");
     expect((options as RequestInit).headers).toMatchObject({
       apikey: "pk-test",
       Authorization: "Bearer token-123",
@@ -70,7 +72,8 @@ describe("api auth headers", () => {
 
     await sendChatMessage([{ role: "user", content: "oi" }], "conv-1", undefined, true);
 
-    const [, options] = fetchMock.mock.calls[0];
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/chat");
     const payload = JSON.parse(String((options as RequestInit).body));
     expect(payload.sqlDebug).toBe(true);
 

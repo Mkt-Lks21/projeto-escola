@@ -69,6 +69,7 @@ Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and 
 This repository also includes a VPS-friendly monorepo layout for DigitalOcean:
 
 - `web` container: builds the Vite frontend and serves it through Nginx.
+- `chat-proxy` container: runs the chat orchestration flow outside Supabase Edge and talks to the Delphi proxy locally.
 - `delphi-proxy` container: runs the Delphi upstream proxy in Node.js with TLS 1.2 control.
 - `admin-proxy` container: serves the external metadata/query admin API outside Supabase Edge.
 - `chart-processor` container: keeps the Python chart service available.
@@ -81,6 +82,7 @@ docker compose --env-file deploy/vps.env up --build
 
 The repository already includes `deploy/vps.env` as a placeholder. Replace the values with your real environment before starting the stack.
 
+The chat route is exposed at `/api/chat` through Nginx, with a dedicated `/api/chat-health` endpoint for smoke testing.
 The proxy endpoint is exposed at `/api/external-db-proxy` through Nginx and can also be called directly on the internal container network.
 
 ## Hard Smoke Test
@@ -93,7 +95,7 @@ SMOKE_BASE_URL=http://127.0.0.1:8080 SMOKE_INTERNAL_PROXY_KEY=... npm run smoke:
 
 Optional:
 
-- `SMOKE_SUPABASE_ACCESS_TOKEN` for the authenticated admin proxy check.
+- `SMOKE_SUPABASE_ACCESS_TOKEN` for the authenticated chat and admin proxy checks.
 - `SMOKE_SUPABASE_PUBLISHABLE_KEY` if you want the script to test `external-db-admin` with your Supabase anon key.
 
 ## Can I connect a custom domain to my Lovable project?

@@ -242,10 +242,10 @@ export async function sendChatMessage(
   agentId?: string,
   sqlDebug?: boolean
 ): Promise<Response> {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const backendBaseUrl = getBackendApiBaseUrl();
   const headers = await getAuthenticatedFunctionHeaders();
 
-  return fetch(`${supabaseUrl}/functions/v1/chat`, {
+  return fetch(`${backendBaseUrl}/chat`, {
     method: "POST",
     headers,
     body: JSON.stringify({ messages, conversationId, agentId, sqlDebug }),

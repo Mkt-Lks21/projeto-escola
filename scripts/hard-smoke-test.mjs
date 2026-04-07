@@ -113,6 +113,29 @@ async function main() {
     return null;
   });
 
+  await expectOk("Chat health", `${baseUrl}/api/chat-health`, {}, ({ parsed }) => {
+    if (!parsed || parsed.service !== "chat-proxy" || parsed.status !== "ok") {
+      return "unexpected chat health payload";
+    }
+    return null;
+  });
+
+  await expectFailure("Chat rejects missing authorization", `${baseUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messages: [{ role: "user", content: "oi" }],
+    }),
+  }, ({ parsed, response }) => {
+    if (response.status !== 401) {
+      return `expected 401 when authorization is missing, got ${response.status}`;
+    }
+    if (!parsed || typeof parsed.error !== "string" || !/authorization/i.test(parsed.error)) {
+      return "expected authorization error message";
+    }
+    return null;
+  });
+
   await expectFailure("Delphi proxy rejects missing internal key", `${baseUrl}/api/external-db-proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -166,6 +189,32 @@ async function main() {
   }
 
   if (supabaseAccessToken && supabasePublishableKey) {
+    await expectOk(
+      "Chat end-to-end",
+      `${baseUrl}/api/chat`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${supabaseAccessToken}`,
+          apikey: supabasePublishableKey,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "Responda apenas com uma saudacao curta." }],
+          sqlDebug: false,
+        }),
+      },
+      ({ bodyText }) => {
+        if (!bodyText.includes("data:")) {
+          return "expected SSE data frames in chat response";
+        }
+        if (!bodyText.includes("[DONE]")) {
+          return "expected chat stream to terminate with [DONE]";
+        }
+        return null;
+      },
+    );
+
     await expectOk(
       "Admin proxy test-connection",
       `${baseUrl}/api/external-db-admin`,
