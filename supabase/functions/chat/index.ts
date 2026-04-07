@@ -297,6 +297,8 @@ export async function handleChatRequest(req: Request): Promise<Response> {
       );
     }
 
+    const delphiProxyUrl = Deno.env.get("DELPHI_PROXY_URL")?.trim() || `${supabaseUrl.replace(/\/+$/, "")}/functions/v1/external-db-proxy`;
+
     const supabase = createClient(supabaseUrl, supabaseKey);
     const accessToken = extractBearerToken(req);
     const authenticatedUser = await authenticateRequestUser(accessToken, supabase);
@@ -451,6 +453,7 @@ export async function handleChatRequest(req: Request): Promise<Response> {
       supabaseServiceKey: supabaseKey,
       userAccessToken: accessToken!,
       internalProxyKey,
+      delphiProxyUrl,
       sqlDebug: sqlDebugRequested,
     });
 
@@ -893,14 +896,12 @@ export async function generateSqlQueryWithRetry(params: {
 }
 
 export async function invokeDelphiProxy(
-  supabaseUrl: string,
+  proxyUrl: string,
   supabaseServiceKey: string,
   userAccessToken: string,
   internalProxyKey: string,
   payload: DelphiProxyPayload,
 ): Promise<DelphiProxyResult> {
-  const baseUrl = supabaseUrl.endsWith("/") ? supabaseUrl.slice(0, -1) : supabaseUrl;
-  const proxyUrl = `${baseUrl}/functions/v1/external-db-proxy`;
   const response = await fetch(proxyUrl, {
     method: "POST",
     headers: {
@@ -945,6 +946,7 @@ async function runSwarmFlow(params: {
   supabaseServiceKey: string;
   userAccessToken: string;
   internalProxyKey: string;
+  delphiProxyUrl: string;
   sqlDebug: boolean;
 }): Promise<SwarmFlowResult> {
   const {
@@ -959,6 +961,7 @@ async function runSwarmFlow(params: {
     supabaseServiceKey,
     userAccessToken,
     internalProxyKey,
+    delphiProxyUrl,
     sqlDebug,
   } = params;
 
@@ -1057,7 +1060,7 @@ async function runSwarmFlow(params: {
       `[SWARM_GUARDRAIL] atendimentoTipoApplied=${initialGuardrail.atendimentoTipoApplied} reason=${initialGuardrail.reason}`,
     );
 
-    let proxyResult = await invokeDelphiProxy(supabaseUrl, supabaseServiceKey, userAccessToken, internalProxyKey, {
+    let proxyResult = await invokeDelphiProxy(delphiProxyUrl, supabaseServiceKey, userAccessToken, internalProxyKey, {
       fields: effectiveQueryPayload.fields,
       tables: effectiveQueryPayload.tables,
       cond: effectiveQueryPayload.cond,
@@ -1111,7 +1114,7 @@ async function runSwarmFlow(params: {
           `[SWARM_GUARDRAIL] atendimentoTipoApplied=${retryGuardrail.atendimentoTipoApplied} reason=${retryGuardrail.reason}`,
         );
 
-        proxyResult = await invokeDelphiProxy(supabaseUrl, supabaseServiceKey, userAccessToken, internalProxyKey, {
+        proxyResult = await invokeDelphiProxy(delphiProxyUrl, supabaseServiceKey, userAccessToken, internalProxyKey, {
           fields: effectiveQueryPayload.fields,
           tables: effectiveQueryPayload.tables,
           cond: effectiveQueryPayload.cond,

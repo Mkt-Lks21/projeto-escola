@@ -31,7 +31,7 @@ Deno.test("invokeDelphiProxy forwards the user authorization token and internal 
 
   try {
     const result = await invokeDelphiProxy(
-      "https://mvvakdsezhfywjdgaqde.supabase.co",
+      "https://proxy.example.com/external-db-proxy",
       "service-role-key",
       "user-access-token",
       "internal-proxy-secret",
@@ -45,7 +45,7 @@ Deno.test("invokeDelphiProxy forwards the user authorization token and internal 
     assertEquals(result.success, true);
     assert(capturedRequest !== null);
     const captured = capturedRequest as { url: string; init?: RequestInit };
-    assertEquals(captured.url, "https://mvvakdsezhfywjdgaqde.supabase.co/functions/v1/external-db-proxy");
+    assertEquals(captured.url, "https://proxy.example.com/external-db-proxy");
     const headers = new Headers(captured.init?.headers);
     assertEquals(headers.get("Authorization"), "Bearer user-access-token");
     assertEquals(headers.get("x-internal-proxy-key"), "internal-proxy-secret");
@@ -68,7 +68,7 @@ Deno.test("invokeDelphiProxy surfaces upstream 401 errors without masking them",
     await assertRejects(
       () =>
         invokeDelphiProxy(
-          "https://mvvakdsezhfywjdgaqde.supabase.co",
+          "https://proxy.example.com/external-db-proxy",
           "service-role-key",
           "user-access-token",
           "internal-proxy-secret",

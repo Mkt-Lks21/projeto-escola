@@ -12,6 +12,10 @@ import {
 
 const PROFILE_AVATAR_BUCKET = "profile-avatars";
 
+function getBackendApiBaseUrl(): string {
+  return import.meta.env.VITE_BACKEND_API_URL || `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+}
+
 function getSupabasePublicKey(): string {
   const key =
     import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
@@ -176,10 +180,10 @@ export async function refreshMetadata(): Promise<void> {
 }
 
 export async function fetchExternalMetadata(): Promise<DatabaseMetadata[]> {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const backendBaseUrl = getBackendApiBaseUrl();
   const headers = await getAuthenticatedFunctionHeaders();
 
-  const response = await fetch(`${supabaseUrl}/functions/v1/external-db-admin`, {
+  const response = await fetch(`${backendBaseUrl}/external-db-admin`, {
     method: "POST",
     headers,
     body: JSON.stringify({ action: "fetch-metadata" }),
@@ -214,10 +218,10 @@ export async function cacheExternalMetadata(_metadata: DatabaseMetadata[]): Prom
 }
 
 export async function executeExternalQuery(query: string): Promise<any[]> {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const backendBaseUrl = getBackendApiBaseUrl();
   const headers = await getAuthenticatedFunctionHeaders();
 
-  const response = await fetch(`${supabaseUrl}/functions/v1/external-db-admin`, {
+  const response = await fetch(`${backendBaseUrl}/external-db-admin`, {
     method: "POST",
     headers,
     body: JSON.stringify({ action: "execute-query", query }),
@@ -375,10 +379,10 @@ export async function testExternalConnection(): Promise<{
   error?: string;
   url?: string;
 }> {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const backendBaseUrl = getBackendApiBaseUrl();
   const headers = await getAuthenticatedFunctionHeaders();
 
-  const response = await fetch(`${supabaseUrl}/functions/v1/external-db-admin`, {
+  const response = await fetch(`${backendBaseUrl}/external-db-admin`, {
     method: "POST",
     headers,
     body: JSON.stringify({ action: "test-connection" }),

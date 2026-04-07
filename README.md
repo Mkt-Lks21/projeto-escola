@@ -64,6 +64,25 @@ This project is built with:
 
 Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
 
+## VPS Deployment
+
+This repository also includes a VPS-friendly monorepo layout for DigitalOcean:
+
+- `web` container: builds the Vite frontend and serves it through Nginx.
+- `delphi-proxy` container: runs the Delphi upstream proxy in Node.js with TLS 1.2 control.
+- `admin-proxy` container: serves the external metadata/query admin API outside Supabase Edge.
+- `chart-processor` container: keeps the Python chart service available.
+
+To run it locally or on a VPS:
+
+```sh
+docker compose --env-file deploy/vps.env up --build
+```
+
+The repository already includes `deploy/vps.env` as a placeholder. Replace the values with your real environment before starting the stack.
+
+The proxy endpoint is exposed at `/api/external-db-proxy` through Nginx and can also be called directly on the internal container network.
+
 ## Can I connect a custom domain to my Lovable project?
 
 Yes, you can!

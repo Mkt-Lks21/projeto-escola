@@ -9,7 +9,7 @@ vi.mock("@/integrations/supabase/client", () => ({
   },
 }));
 
-import { sendChatMessage } from "./api";
+import { fetchExternalMetadata, sendChatMessage, testExternalConnection } from "./api";
 import { supabase } from "@/integrations/supabase/client";
 
 describe("api auth headers", () => {
@@ -73,6 +73,35 @@ describe("api auth headers", () => {
     const [, options] = fetchMock.mock.calls[0];
     const payload = JSON.parse(String((options as RequestInit).body));
     expect(payload.sqlDebug).toBe(true);
+
+    fetchMock.mockRestore();
+  });
+
+  it("uses backend api base url when set for metadata calls", async () => {
+    vi.stubEnv("VITE_BACKEND_API_URL", "/api");
+    mockedSupabase.auth.getSession.mockResolvedValue({
+      data: { session: { access_token: "token-123" } },
+      error: null,
+    });
+
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () =>
+        new Response(JSON.stringify({ success: true, data: [], message: "ok" }), { status: 200 }));
+
+    await fetchExternalMetadata();
+    await testExternalConnection();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/external-db-admin",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/external-db-admin",
+      expect.objectContaining({ method: "POST" }),
+    );
 
     fetchMock.mockRestore();
   });

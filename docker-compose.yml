@@ -1,0 +1,44 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${VITE_SUPABASE_PUBLISHABLE_KEY}
+        VITE_BACKEND_API_URL: ${VITE_BACKEND_API_URL}
+    depends_on:
+      - delphi-proxy
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+  delphi-proxy:
+    build:
+      context: .
+      dockerfile: services/delphi-proxy/Dockerfile
+    env_file:
+      - ./deploy/vps.env
+    expose:
+      - "8787"
+    restart: unless-stopped
+
+  admin-proxy:
+    build:
+      context: .
+      dockerfile: services/admin-proxy/Dockerfile
+    env_file:
+      - ./deploy/vps.env
+    expose:
+      - "8788"
+    restart: unless-stopped
+
+  chart-processor:
+    build:
+      context: ./services/chart-processor
+      dockerfile: Dockerfile
+    env_file:
+      - ./deploy/vps.env
+    expose:
+      - "8000"
+    restart: unless-stopped

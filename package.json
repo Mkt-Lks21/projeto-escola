@@ -11,6 +11,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "proxy:start": "node services/delphi-proxy/server.mjs",
+    "compose:up": "docker compose up --build",
+    "compose:down": "docker compose down",
     "security:audit": "npm audit --audit-level=moderate",
     "security:outdated": "npm outdated"
   },
