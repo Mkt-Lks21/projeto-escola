@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "proxy:start": "node services/delphi-proxy/server.mjs",
+    "smoke:hard": "node scripts/hard-smoke-test.mjs",
     "compose:up": "docker compose up --build",
     "compose:down": "docker compose down",
     "security:audit": "npm audit --audit-level=moderate",

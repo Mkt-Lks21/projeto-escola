@@ -83,6 +83,19 @@ The repository already includes `deploy/vps.env` as a placeholder. Replace the v
 
 The proxy endpoint is exposed at `/api/external-db-proxy` through Nginx and can also be called directly on the internal container network.
 
+## Hard Smoke Test
+
+After bringing the stack up, run:
+
+```sh
+SMOKE_BASE_URL=http://127.0.0.1:8080 SMOKE_INTERNAL_PROXY_KEY=... npm run smoke:hard
+```
+
+Optional:
+
+- `SMOKE_SUPABASE_ACCESS_TOKEN` for the authenticated admin proxy check.
+- `SMOKE_SUPABASE_PUBLISHABLE_KEY` if you want the script to test `external-db-admin` with your Supabase anon key.
+
 ## Can I connect a custom domain to my Lovable project?
 
 Yes, you can!
