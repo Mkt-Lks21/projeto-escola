@@ -1,26 +1,27 @@
-import { useState, useRef, useEffect, KeyboardEvent } from "react";
+import { useEffect, useRef, useState, KeyboardEvent } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
-import { Send } from "lucide-react";
+import { Loader2, Mic, Send, Square } from "lucide-react";
 
 interface ChatInputProps {
   onSend: (message: string) => void;
+  onSendAudio: (audio: Blob) => Promise<void> | void;
   isLoading: boolean;
-  sqlDebugEnabled?: boolean;
-  onSqlDebugChange?: (value: boolean) => void;
 }
 
-export default function ChatInput({
-  onSend,
-  isLoading,
-  sqlDebugEnabled = false,
-  onSqlDebugChange,
-}: ChatInputProps) {
+type AudioState = "idle" | "recording" | "transcribing";
+
+export default function ChatInput({ onSend, onSendAudio, isLoading }: ChatInputProps) {
   const MAX_INPUT_LENGTH = 4000;
   const [input, setInput] = useState("");
+  const [audioState, setAudioState] = useState<AudioState>("idle");
+  const [audioError, setAudioError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const prevIsLoadingRef = useRef(isLoading);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const pendingAudioSendRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -48,6 +49,18 @@ export default function ChatInput({
     textareaRef.current?.focus({ preventScroll: true });
   }, [isLoading]);
 
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current?.state === "recording") {
+        mediaRecorderRef.current.stop();
+      }
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      audioChunksRef.current = [];
+    };
+  }, []);
+
   const sanitizeUserInput = (value: string): string => {
     // Remove invisible control chars often used in injection obfuscation.
     const filtered = Array.from(value)
@@ -64,9 +77,96 @@ export default function ChatInput({
 
   const handleSend = () => {
     const sanitized = sanitizeUserInput(input).trim();
-    if (sanitized && !isLoading) {
+    if (sanitized && !isLoading && audioState === "idle") {
       onSend(sanitized);
       setInput("");
+    }
+  };
+
+  const stopRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+    recorder.stop();
+  };
+
+  const startRecording = async () => {
+    if (isLoading || audioState !== "idle") return;
+
+    setAudioError(null);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg"];
+      const selectedMimeType = mimeTypes.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || "";
+      const recorder = new MediaRecorder(stream, selectedMimeType ? { mimeType: selectedMimeType } : undefined);
+
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+      setAudioState("recording");
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        setAudioState("idle");
+        setAudioError("Nao foi possivel gravar o audio.");
+      };
+
+      recorder.onstop = async () => {
+        const chunks = audioChunksRef.current;
+        const mimeType = recorder.mimeType || "audio/webm";
+        const audioBlob = new Blob(chunks, { type: mimeType });
+
+        audioChunksRef.current = [];
+        mediaRecorderRef.current = null;
+        mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+
+        if (!audioBlob.size) {
+          setAudioState("idle");
+          setAudioError("Nenhum audio foi capturado.");
+          return;
+        }
+
+        setAudioState("transcribing");
+        const sendPromise = Promise.resolve(onSendAudio(audioBlob));
+        pendingAudioSendRef.current = sendPromise;
+        try {
+          await sendPromise;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Falha ao transcrever o audio.";
+          setAudioError(message);
+        } finally {
+          if (pendingAudioSendRef.current === sendPromise) {
+            pendingAudioSendRef.current = null;
+          }
+          setAudioState("idle");
+        }
+      };
+
+      recorder.start();
+    } catch (error) {
+      const message =
+        error instanceof DOMException && error.name === "NotAllowedError"
+          ? "Permissao de microfone negada."
+          : "Nao foi possivel acessar o microfone.";
+      setAudioError(message);
+      setAudioState("idle");
+    }
+  };
+
+  const handleAudioButtonClick = () => {
+    if (audioState === "recording") {
+      stopRecording();
+      return;
+    }
+
+    if (audioState === "idle") {
+      void startRecording();
     }
   };
 
@@ -86,15 +186,14 @@ export default function ChatInput({
         className="pointer-events-auto w-full max-w-4xl mx-auto space-y-2 glass-subtle rounded-2xl p-3 shadow-[0_18px_45px_rgba(0,0,0,0.14)] border border-white/45"
         data-testid="chat-input-column"
       >
-        {onSqlDebugChange && (
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <Switch checked={sqlDebugEnabled} onCheckedChange={onSqlDebugChange} />
-              <span>Mostrar SQL</span>
-            </label>
-            {sqlDebugEnabled && <span>Somente leitura</span>}
-          </div>
+        {audioState !== "idle" && (
+          <p className="text-xs text-muted-foreground">
+            {audioState === "recording"
+              ? "Gravando audio... clique no microfone para parar."
+              : "Transcrevendo audio..."}
+          </p>
         )}
+        {audioError && <p className="text-xs text-destructive">{audioError}</p>}
         <div className="relative">
           <Textarea
             ref={textareaRef}
@@ -102,18 +201,37 @@ export default function ChatInput({
             onChange={(e) => setInput(sanitizeUserInput(e.target.value))}
             onKeyDown={handleKeyDown}
             placeholder="Pergunte algo..."
-            className="min-h-[44px] md:min-h-[48px] max-h-[200px] resize-none bg-transparent border-white/40 pr-14 text-base md:text-sm"
-            disabled={isLoading}
+            className="min-h-[44px] md:min-h-[48px] max-h-[200px] resize-none bg-transparent border-white/40 pr-28 text-base md:text-sm"
+            disabled={isLoading || audioState !== "idle"}
             maxLength={MAX_INPUT_LENGTH}
           />
-          <Button
-            onClick={handleSend}
-            disabled={!input.trim() || isLoading}
-            size="icon"
-            className="absolute right-1.5 bottom-1.5 h-[36px] w-[36px]"
-          >
-            <Send className="w-4 h-4" />
-          </Button>
+          <div className="absolute right-1.5 bottom-1.5 flex items-center gap-1">
+            <Button
+              type="button"
+              onClick={handleAudioButtonClick}
+              disabled={isLoading}
+              size="icon"
+              variant={audioState === "recording" ? "destructive" : "secondary"}
+              className="h-[36px] w-[36px]"
+              title={audioState === "recording" ? "Parar gravacao" : "Gravar audio"}
+            >
+              {audioState === "recording" ? (
+                <Square className="w-4 h-4" />
+              ) : audioState === "transcribing" ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Mic className="w-4 h-4" />
+              )}
+            </Button>
+            <Button
+              onClick={handleSend}
+              disabled={!input.trim() || isLoading || audioState !== "idle"}
+              size="icon"
+              className="h-[36px] w-[36px]"
+            >
+              <Send className="w-4 h-4" />
+            </Button>
+          </div>
         </div>
       </div>
     </div>

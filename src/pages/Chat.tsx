@@ -13,22 +13,12 @@ import MobileHeader from "@/components/layout/MobileHeader";
 
 export default function Chat() {
   const { agentId } = useParams<{ agentId?: string }>();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const initialConversationId = searchParams.get("c") || undefined;
   const [agentTables, setAgentTables] = useState<AgentTable[]>([]);
   const { user } = useAuth();
   const [displayName, setDisplayName] = useState(() => user?.email?.split("@")?.[0] || "Usuario");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const sqlDebugEnabled = useMemo(() => {
-    const rawValue =
-      searchParams.get("sqlDebug") ??
-      searchParams.get("debugSql") ??
-      searchParams.get("showSql") ??
-      searchParams.get("devSql") ??
-      "";
-    const normalized = rawValue.toLowerCase();
-    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
-  }, [searchParams]);
   const {
     conversations,
     currentConversationId,
@@ -36,6 +26,7 @@ export default function Chat() {
     isLoading,
     streamingContent,
     sendMessage,
+    sendAudioMessage,
     selectConversation,
     deleteConversation,
     createNewConversation,
@@ -106,18 +97,8 @@ export default function Chat() {
     ];
   }, [agentTables]);
 
-  const handleToggleSqlDebug = (value: boolean) => {
-    const next = new URLSearchParams(searchParams);
-    if (value) {
-      next.set("sqlDebug", "1");
-    } else {
-      next.delete("sqlDebug");
-    }
-    setSearchParams(next, { replace: true });
-  };
-
-  const handleSend = (text: string) => sendMessage(text, { sqlDebug: sqlDebugEnabled });
-  const handleSuggestionClick = (text: string) => sendMessage(text, { sqlDebug: sqlDebugEnabled });
+  const handleSend = (text: string) => sendMessage(text);
+  const handleSuggestionClick = (text: string) => sendMessage(text);
 
   return (
     <div className="flex flex-col md:flex-row h-screen bg-background p-0 md:p-4 md:gap-4 relative z-10">
@@ -149,9 +130,8 @@ export default function Chat() {
 
         <ChatInput
           onSend={handleSend}
+          onSendAudio={sendAudioMessage}
           isLoading={isLoading}
-          sqlDebugEnabled={sqlDebugEnabled}
-          onSqlDebugChange={handleToggleSqlDebug}
         />
       </main>
     </div>

@@ -28,7 +28,7 @@ function getSupabasePublicKey(): string {
   return key;
 }
 
-async function getAuthenticatedFunctionHeaders(): Promise<Record<string, string>> {
+async function getAuthenticatedFunctionHeaders(contentType?: string): Promise<Record<string, string>> {
   const supabaseKey = getSupabasePublicKey();
   const { data, error } = await supabase.auth.getSession();
 
@@ -39,11 +39,16 @@ async function getAuthenticatedFunctionHeaders(): Promise<Record<string, string>
     throw new Error("Sessao expirada. Faca login novamente.");
   }
 
-  return {
-    "Content-Type": "application/json",
+  const headers: Record<string, string> = {
     apikey: supabaseKey,
     Authorization: `Bearer ${accessToken}`,
   };
+
+  if (contentType) {
+    headers["Content-Type"] = contentType;
+  }
+
+  return headers;
 }
 
 function toSafeNumber(value: unknown): number {
@@ -181,7 +186,7 @@ export async function refreshMetadata(): Promise<void> {
 
 export async function fetchExternalMetadata(): Promise<DatabaseMetadata[]> {
   const backendBaseUrl = getBackendApiBaseUrl();
-  const headers = await getAuthenticatedFunctionHeaders();
+  const headers = await getAuthenticatedFunctionHeaders("application/json");
 
   const response = await fetch(`${backendBaseUrl}/external-db-admin`, {
     method: "POST",
@@ -219,7 +224,7 @@ export async function cacheExternalMetadata(_metadata: DatabaseMetadata[]): Prom
 
 export async function executeExternalQuery(query: string): Promise<any[]> {
   const backendBaseUrl = getBackendApiBaseUrl();
-  const headers = await getAuthenticatedFunctionHeaders();
+  const headers = await getAuthenticatedFunctionHeaders("application/json");
 
   const response = await fetch(`${backendBaseUrl}/external-db-admin`, {
     method: "POST",
@@ -239,17 +244,45 @@ export async function executeExternalQuery(query: string): Promise<any[]> {
 export async function sendChatMessage(
   messages: { role: string; content: string }[],
   conversationId: string,
-  agentId?: string,
-  sqlDebug?: boolean
+  agentId?: string
 ): Promise<Response> {
   const backendBaseUrl = getBackendApiBaseUrl();
-  const headers = await getAuthenticatedFunctionHeaders();
+  const headers = await getAuthenticatedFunctionHeaders("application/json");
 
   return fetch(`${backendBaseUrl}/chat`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ messages, conversationId, agentId, sqlDebug }),
+    body: JSON.stringify({ messages, conversationId, agentId }),
   });
+}
+
+export async function transcribeChatAudio(
+  file: File,
+  agentId?: string
+): Promise<{ transcript: string }> {
+  const backendBaseUrl = getBackendApiBaseUrl();
+  const headers = await getAuthenticatedFunctionHeaders();
+  const formData = new FormData();
+  formData.append("audio", file, file.name || "audio.webm");
+
+  if (agentId) {
+    formData.append("agentId", agentId);
+  }
+
+  const response = await fetch(`${backendBaseUrl}/chat/transcribe`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result.error || result.message || "Erro ao transcrever audio");
+  }
+
+  return {
+    transcript: typeof result?.transcript === "string" ? result.transcript : "",
+  };
 }
 
 export async function getMyProfile(): Promise<UserProfile> {

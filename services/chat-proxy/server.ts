@@ -1,6 +1,8 @@
 import http from "node:http";
 import { Readable } from "node:stream";
-import { handleChatRequest } from "./index.ts";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
+import { handleChatRequest, handleChatTranscribeRequest } from "./index.ts";
+import { createCorsHeaders } from "../_shared/security.ts";
 
 function normalizeEnvValue(value: string): string {
   const trimmed = value.trim();
@@ -54,6 +56,22 @@ function toRequestHeaders(headers: http.IncomingHttpHeaders): Headers {
   return requestHeaders;
 }
 
+function toHeaderRecord(headers: HeadersInit): Record<string, string> {
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers);
+  }
+
+  if (headers instanceof Headers) {
+    const record: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      record[key] = value;
+    });
+    return record;
+  }
+
+  return headers;
+}
+
 function buildWebRequest(req: http.IncomingMessage, port: number): Request {
   const host = typeof req.headers.host === "string" && req.headers.host.trim() ? req.headers.host.trim() : `127.0.0.1:${port}`;
   const url = new URL(req.url || "/", `http://${host}`);
@@ -74,8 +92,7 @@ function buildWebRequest(req: http.IncomingMessage, port: number): Request {
 }
 
 async function writeWebResponse(res: http.ServerResponse, response: Response): Promise<void> {
-  const headers = Object.fromEntries(response.headers.entries());
-  res.writeHead(response.status, headers);
+  res.writeHead(response.status, toHeaderRecord(response.headers));
 
   if (!response.body) {
     const bodyText = await response.text();
@@ -83,7 +100,7 @@ async function writeWebResponse(res: http.ServerResponse, response: Response): P
     return;
   }
 
-  const stream = Readable.fromWeb(response.body as any);
+  const stream = Readable.fromWeb(response.body as NodeReadableStream<Uint8Array>);
   stream.on("error", (error) => {
     if (!res.headersSent) {
       res.writeHead(500, { "Content-Type": "application/json" });
@@ -106,15 +123,28 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return;
   }
 
+  if (method === "OPTIONS") {
+    const origin = typeof req.headers.origin === "string" ? req.headers.origin : null;
+    res.writeHead(204, {
+      ...toHeaderRecord(createCorsHeaders(origin)),
+      "Cache-Control": "no-cache",
+    });
+    res.end();
+    return;
+  }
+
   const allowedChatPaths = new Set(["/chat", "/api/chat"]);
-  if (!allowedChatPaths.has(pathname) && method !== "OPTIONS") {
+  const allowedTranscribePaths = new Set(["/chat/transcribe", "/api/chat/transcribe"]);
+  if (!allowedChatPaths.has(pathname) && !allowedTranscribePaths.has(pathname)) {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Not found." }));
     return;
   }
 
   const webRequest = buildWebRequest(req, port);
-  const webResponse = await handleChatRequest(webRequest);
+  const webResponse = allowedTranscribePaths.has(pathname)
+    ? await handleChatTranscribeRequest(webRequest)
+    : await handleChatRequest(webRequest);
   await writeWebResponse(res, webResponse);
 }
 

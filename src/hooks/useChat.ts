@@ -6,6 +6,7 @@ import {
   deleteConversation as apiDeleteConversation,
   getMessages,
   createMessage,
+  transcribeChatAudio,
   sendChatMessage,
   updateConversationTitle,
 } from "@/lib/api";
@@ -109,7 +110,7 @@ export function useChat(agentId?: string, initialConversationId?: string) {
     }
   }, [agentId]);
 
-  const sendMessage = useCallback(async (content: string, options?: { sqlDebug?: boolean }) => {
+  const sendMessage = useCallback(async (content: string) => {
     if (!content.trim()) return;
 
     setIsLoading(true);
@@ -140,7 +141,7 @@ export function useChat(agentId?: string, initialConversationId?: string) {
         { role: "user", content },
       ];
 
-      const response = await sendChatMessage(apiMessages, conversationId, agentId, options?.sqlDebug);
+      const response = await sendChatMessage(apiMessages, conversationId, agentId);
 
       if (!response.ok) {
         const error: ChatUsageError = await response.json().catch(() => ({}));
@@ -218,6 +219,34 @@ export function useChat(agentId?: string, initialConversationId?: string) {
     }
   }, [currentConversationId, messages, agentId]);
 
+  const sendAudioMessage = useCallback(async (audio: Blob) => {
+    if (!audio.size) return;
+
+    setIsLoading(true);
+    setStreamingContent("");
+
+    try {
+      const audioFile = new File([audio], `audio-${Date.now()}.webm`, {
+        type: audio.type || "audio/webm",
+      });
+      const transcription = await transcribeChatAudio(audioFile, agentId);
+      const transcript = typeof transcription?.transcript === "string" ? transcription.transcript : "";
+
+      if (!transcript.trim()) {
+        throw new Error("Nao foi possivel transcrever o audio.");
+      }
+
+      await sendMessage(transcript.trim());
+    } catch (error) {
+      console.error("Audio chat error:", error);
+      toast.error(error instanceof Error ? error.message : "Erro ao transcrever audio");
+      throw error;
+    } finally {
+      setIsLoading(false);
+      setStreamingContent("");
+    }
+  }, [agentId, sendMessage]);
+
   return {
     conversations,
     currentConversationId,
@@ -225,6 +254,7 @@ export function useChat(agentId?: string, initialConversationId?: string) {
     isLoading,
     streamingContent,
     sendMessage,
+    sendAudioMessage,
     selectConversation,
     deleteConversation,
     createNewConversation,

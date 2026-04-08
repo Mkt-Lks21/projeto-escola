@@ -12,6 +12,16 @@ const MAX_INSIGHT_ROWS = 200;
 const INSIGHT_TEMPERATURE = 0.4;
 const USAGE_SAFETY_MARGIN_TOKENS = 2000;
 const QUERY_GENERATOR_MAX_RETRIES = 1;
+const TRANSCRIPTION_MAX_AUDIO_BYTES = 10 * 1024 * 1024;
+const TRANSCRIPTION_ALLOWED_MIME_TYPES = new Set([
+  "audio/webm",
+  "audio/ogg",
+  "audio/wav",
+  "audio/mp4",
+  "audio/mpeg",
+]);
+const TRANSCRIPTION_PROMPT =
+  "Transcreva o audio em portugues do Brasil. Retorne somente a transcricao final, sem aspas, sem marcacoes e sem explicacoes.";
 export const QUERY_GENERATOR_USER_FRIENDLY_ERROR =
   "Nao consegui montar a consulta agora. Tente reformular sua pergunta com mais contexto (periodo, entidade ou filtro).";
 
@@ -349,11 +359,10 @@ export async function handleChatRequest(req: Request): Promise<Response> {
       );
     }
 
-    const body = await req.json();
+    const body = (await req.json()) as Record<string, unknown>;
     const messages = normalizeRequestMessages(body?.messages);
     const agentId = typeof body?.agentId === "string" ? body.agentId : null;
     const conversationId = typeof body?.conversationId === "string" ? body.conversationId : null;
-    const sqlDebugRequested = toBooleanFlag(body?.sqlDebug);
     const interactionId = crypto.randomUUID();
 
     if (conversationId) {
@@ -482,7 +491,7 @@ export async function handleChatRequest(req: Request): Promise<Response> {
       userAccessToken: accessToken!,
       internalProxyKey,
       delphiProxyUrl,
-      sqlDebug: sqlDebugRequested,
+      sqlDebug: false,
     });
 
     totalUsage = mergeUsage(totalUsage, swarmResult.usage);
@@ -586,6 +595,225 @@ export async function handleChatRequest(req: Request): Promise<Response> {
   }
 }
 
+export async function handleChatTranscribeRequest(req: Request): Promise<Response> {
+  const corsResponse = enforceCors(req);
+  if (corsResponse) return corsResponse;
+
+  if (req.method !== "POST") {
+    return createJsonResponse(req, { error: "Metodo nao permitido. Use POST." }, 405);
+  }
+
+  try {
+    const requestId = getRequestId(req);
+    const supabaseUrl = env("SUPABASE_URL");
+    const supabaseKey = env("SUPABASE_SERVICE_ROLE_KEY");
+    const internalProxyKey = env("INTERNAL_PROXY_KEY");
+
+    if (!supabaseUrl || !supabaseKey || !internalProxyKey) {
+      return createJsonResponse(
+        req,
+        { error: "Segredos SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY e INTERNAL_PROXY_KEY sao obrigatorios." },
+        500,
+      );
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    const accessToken = extractBearerToken(req);
+    const authenticatedUser = await authenticateRequestUser(accessToken, supabase);
+
+    if (!authenticatedUser) {
+      return createJsonResponse(
+        req,
+        { error: "Missing or invalid authorization token.", request_id: requestId },
+        401,
+        { "x-request-id": requestId },
+      );
+    }
+
+    const rateLimit = await rateLimitByUser(authenticatedUser.id, "chat");
+    if (!rateLimit.allowed) {
+      return createJsonResponse(
+        req,
+        { error: "Rate limit excedido.", reset_at: rateLimit.resetAtEpochMs, request_id: requestId },
+        429,
+        { "x-request-id": requestId },
+      );
+    }
+
+    const contentType = req.headers.get("content-type") || "";
+    if (!contentType.toLowerCase().includes("multipart/form-data")) {
+      return createJsonResponse(
+        req,
+        { error: "Envie o audio em multipart/form-data com o campo audio.", request_id: requestId },
+        400,
+        { "x-request-id": requestId },
+      );
+    }
+
+    const formData = await req.formData();
+    const audioEntry = formData.get("audio");
+
+    if (!(audioEntry instanceof File)) {
+      return createJsonResponse(
+        req,
+        { error: "Campo audio ausente ou invalido.", request_id: requestId },
+        400,
+        { "x-request-id": requestId },
+      );
+    }
+
+    if (audioEntry.size <= 0) {
+      return createJsonResponse(
+        req,
+        { error: "Arquivo de audio vazio.", request_id: requestId },
+        400,
+        { "x-request-id": requestId },
+      );
+    }
+
+    if (audioEntry.size > TRANSCRIPTION_MAX_AUDIO_BYTES) {
+      return createJsonResponse(
+        req,
+        { error: "Arquivo de audio excede o limite permitido.", request_id: requestId },
+        413,
+        { "x-request-id": requestId },
+      );
+    }
+
+    const mimeType = normalizeAudioMimeType(audioEntry.type);
+    if (!TRANSCRIPTION_ALLOWED_MIME_TYPES.has(mimeType)) {
+      return createJsonResponse(
+        req,
+        { error: "Formato de audio nao suportado.", request_id: requestId },
+        415,
+        { "x-request-id": requestId },
+      );
+    }
+
+    const transcriptionSettings = await resolveGeminiTranscriptionSettings(supabase);
+    if (!transcriptionSettings) {
+      return createJsonResponse(
+        req,
+        { error: "Configure a chave do Gemini para transcricao de audio.", request_id: requestId },
+        400,
+        { "x-request-id": requestId },
+      );
+    }
+
+    const audioBytes = new Uint8Array(await audioEntry.arrayBuffer());
+    const transcript = await transcribeAudioWithGemini({
+      apiKey: transcriptionSettings.apiKey,
+      model: transcriptionSettings.model,
+      audioBytes,
+      mimeType,
+    });
+
+    const cleanedTranscript = normalizeTranscriptText(transcript);
+    if (!cleanedTranscript) {
+      return createJsonResponse(
+        req,
+        { error: "Nao foi possivel transcrever o audio.", request_id: requestId },
+        502,
+        { "x-request-id": requestId },
+      );
+    }
+
+    return createJsonResponse(
+      req,
+      { transcript: cleanedTranscript },
+      200,
+      { "x-request-id": requestId },
+    );
+  } catch (error) {
+    console.error("Chat transcription error:", error);
+
+    const errorMessage = error instanceof Error ? error.message : "Erro interno do servidor";
+    return createJsonResponse(req, { error: errorMessage }, 500);
+  }
+}
+
+async function resolveGeminiTranscriptionSettings(
+  supabase: any,
+): Promise<{ apiKey: string; model: string } | null> {
+  const fallbackModel = env("GEMINI_TRANSCRIPTION_MODEL", "gemini-2.5-flash");
+  const fallbackApiKey = env("GEMINI_API_KEY");
+
+  try {
+    const { data: settings } = await supabase
+      .from("llm_settings")
+      .select("*")
+      .eq("is_active", true)
+      .limit(1)
+      .maybeSingle();
+
+    const provider = normalizeProvider(settings?.provider);
+    if (provider === "gemini" && typeof settings?.api_key === "string" && settings.api_key.trim()) {
+      return {
+        apiKey: settings.api_key,
+        model: typeof settings.model === "string" && settings.model.trim() ? settings.model.trim() : fallbackModel,
+      };
+    }
+  } catch (error) {
+    console.warn("Failed to load Gemini settings for transcription:", error);
+  }
+
+  if (fallbackApiKey) {
+    return {
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+    };
+  }
+
+  return null;
+}
+
+async function transcribeAudioWithGemini(params: {
+  apiKey: string;
+  model: string;
+  audioBytes: Uint8Array;
+  mimeType: string;
+}): Promise<string> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${params.model}:generateContent?key=${params.apiKey}`;
+  const requestBody = {
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            inline_data: {
+              mime_type: params.mimeType,
+              data: encodeBase64(params.audioBytes),
+            },
+          },
+          {
+            text: TRANSCRIPTION_PROMPT,
+          },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: 0,
+    },
+  };
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  const rawBody = await response.text();
+  if (!response.ok) {
+    throw new Error(`Erro Gemini (${response.status}): ${extractProviderError(rawBody)}`);
+  }
+
+  const payload = safeJsonParse(rawBody) || {};
+  const parts = payload?.candidates?.[0]?.content?.parts || [];
+  return extractGeminiText(parts);
+}
+
 function normalizeRequestMessages(messages: unknown): ChatMessage[] {
   if (!Array.isArray(messages)) {
     return [];
@@ -604,6 +832,30 @@ function normalizeRole(role: string): string {
     return role;
   }
   return "user";
+}
+
+function normalizeAudioMimeType(mimeType: string): string {
+  return mimeType.split(";")[0].trim().toLowerCase();
+}
+
+function normalizeTranscriptText(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
 }
 
 function getLastUserMessage(messages: ChatMessage[]): string {
@@ -2074,20 +2326,6 @@ function buildSqlDebugQuery(payload: {
   const whereClause = payload.cond ? ` WHERE ${payload.cond}` : "";
   const orderClause = payload.order ? ` ORDER BY ${payload.order}` : "";
   return `${base}${whereClause}${orderClause}`.trim();
-}
-
-function toBooleanFlag(value: unknown): boolean {
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return value === 1;
-  }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
-  }
-  return false;
 }
 
 function createTextSseResponse(req: Request, text: string): Response {

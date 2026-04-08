@@ -9,7 +9,12 @@ vi.mock("@/integrations/supabase/client", () => ({
   },
 }));
 
-import { fetchExternalMetadata, sendChatMessage, testExternalConnection } from "./api";
+import {
+  fetchExternalMetadata,
+  sendChatMessage,
+  testExternalConnection,
+  transcribeChatAudio,
+} from "./api";
 import { supabase } from "@/integrations/supabase/client";
 
 describe("api auth headers", () => {
@@ -44,6 +49,7 @@ describe("api auth headers", () => {
     expect((options as RequestInit).headers).toMatchObject({
       apikey: "pk-test",
       Authorization: "Bearer token-123",
+      "Content-Type": "application/json",
     });
 
     fetchMock.mockRestore();
@@ -60,7 +66,7 @@ describe("api auth headers", () => {
     ).rejects.toThrow("Sessao expirada");
   });
 
-  it("forwards sqlDebug flag to chat function payload", async () => {
+  it("sends chat payload without sqlDebug", async () => {
     mockedSupabase.auth.getSession.mockResolvedValue({
       data: { session: { access_token: "token-123" } },
       error: null,
@@ -70,12 +76,48 @@ describe("api auth headers", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
-    await sendChatMessage([{ role: "user", content: "oi" }], "conv-1", undefined, true);
+    await sendChatMessage([{ role: "user", content: "oi" }], "conv-1", "agent-1");
 
     const [url, options] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/chat");
     const payload = JSON.parse(String((options as RequestInit).body));
-    expect(payload.sqlDebug).toBe(true);
+    expect(payload).toMatchObject({
+      messages: [{ role: "user", content: "oi" }],
+      conversationId: "conv-1",
+      agentId: "agent-1",
+    });
+    expect(payload.sqlDebug).toBeUndefined();
+
+    fetchMock.mockRestore();
+  });
+
+  it("sends multipart audio transcription request", async () => {
+    mockedSupabase.auth.getSession.mockResolvedValue({
+      data: { session: { access_token: "token-123" } },
+      error: null,
+    });
+
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ transcript: "oi mundo" }), { status: 200 }));
+
+    const file = new File(["audio-bytes"], "audio.webm", { type: "audio/webm" });
+    await transcribeChatAudio(file, "agent-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/chat/transcribe");
+    expect((options as RequestInit).headers).toMatchObject({
+      apikey: "pk-test",
+      Authorization: "Bearer token-123",
+    });
+    expect((options as RequestInit).headers).not.toHaveProperty("Content-Type");
+    expect((options as RequestInit).body).toBeInstanceOf(FormData);
+
+    const body = options?.body as FormData;
+    expect(body.get("agentId")).toBe("agent-1");
+    const audio = body.get("audio");
+    expect(audio).toBeInstanceOf(File);
 
     fetchMock.mockRestore();
   });
