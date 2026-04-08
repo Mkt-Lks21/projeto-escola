@@ -1,0 +1,50 @@
+version: "3.8"
+
+networks:
+  lksnet:
+    external: true
+
+services:
+  api:
+    image: projeto-escola-web
+    networks: [lksnet]
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.rbline-api.rule=Host(`api.rbline.com.br`)
+        - traefik.http.routers.rbline-api.entrypoints=websecure
+        - traefik.http.routers.rbline-api.tls=true
+        - traefik.http.routers.rbline-api.tls.certresolver=letsencryptresolver
+        - traefik.http.services.rbline-api.loadbalancer.server.port=80
+
+  delphi-proxy:
+    image: projeto-escola-delphi-proxy
+    env_file: [./vps.env]
+    networks:
+      lksnet:
+        aliases:
+          - delphi-proxy
+
+  chat-proxy:
+    image: projeto-escola-chat-proxy
+    env_file: [./vps.env]
+    networks:
+      lksnet:
+        aliases:
+          - chat-proxy
+
+  admin-proxy:
+    image: projeto-escola-admin-proxy
+    env_file: [./vps.env]
+    networks:
+      lksnet:
+        aliases:
+          - admin-proxy
+
+  chart-processor:
+    image: projeto-escola-chart-processor
+    env_file: [./vps.env]
+    networks:
+      lksnet:
+        aliases:
+          - chart-processor
