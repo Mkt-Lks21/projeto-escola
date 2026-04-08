@@ -15,10 +15,22 @@ const QUERY_GENERATOR_MAX_RETRIES = 1;
 export const QUERY_GENERATOR_USER_FRIENDLY_ERROR =
   "Nao consegui montar a consulta agora. Tente reformular sua pergunta com mais contexto (periodo, entidade ou filtro).";
 
+function normalizeEnvValue(value: string): string {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 function env(name: string, fallback = ""): string {
   const processValue = typeof process !== "undefined" ? process.env?.[name] : undefined;
   if (typeof processValue === "string" && processValue.trim()) {
-    return processValue.trim();
+    return normalizeEnvValue(processValue);
   }
 
   const denoRuntime = globalThis as typeof globalThis & {
@@ -29,7 +41,7 @@ function env(name: string, fallback = ""): string {
     };
   };
   const denoValue = typeof denoRuntime.Deno?.env?.get === "function" ? denoRuntime.Deno.env.get(name) : undefined;
-  return typeof denoValue === "string" && denoValue.trim() ? denoValue.trim() : fallback;
+  return typeof denoValue === "string" && denoValue.trim() ? normalizeEnvValue(denoValue) : fallback;
 }
 
 const CHART_TYPES = ["bar", "line", "pie", "scatter"] as const;

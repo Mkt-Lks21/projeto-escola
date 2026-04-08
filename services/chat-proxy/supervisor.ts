@@ -27,10 +27,22 @@ export interface SupervisorResult extends SupervisorDecision {
   shouldFallback: boolean;
 }
 
+function normalizeEnvValue(value: string): string {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 function env(name: string, fallback = ""): string {
   const processValue = typeof process !== "undefined" ? process.env?.[name] : undefined;
   if (typeof processValue === "string" && processValue.trim()) {
-    return processValue.trim();
+    return normalizeEnvValue(processValue);
   }
 
   const denoRuntime = globalThis as typeof globalThis & {
@@ -41,7 +53,7 @@ function env(name: string, fallback = ""): string {
     };
   };
   const denoValue = typeof denoRuntime.Deno?.env?.get === "function" ? denoRuntime.Deno.env.get(name) : undefined;
-  return typeof denoValue === "string" && denoValue.trim() ? denoValue.trim() : fallback;
+  return typeof denoValue === "string" && denoValue.trim() ? normalizeEnvValue(denoValue) : fallback;
 }
 
 const VALID_WORKERS = new Set<WorkerName>([

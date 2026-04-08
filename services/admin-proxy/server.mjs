@@ -13,9 +13,21 @@ const actionSchema = z.object({
   query: z.string().optional(),
 });
 
+function normalizeEnvValue(value) {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 function env(name, fallback = "") {
   const value = process.env[name];
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+  return typeof value === "string" && value.trim() ? normalizeEnvValue(value) : fallback;
 }
 
 function getAllowedOrigins() {

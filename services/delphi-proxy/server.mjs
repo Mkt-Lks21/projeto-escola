@@ -28,9 +28,21 @@ const proxyRequestSchema = z.object({
 
 let cachedDelphiAuthToken = null;
 
+function normalizeEnvValue(value) {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 function env(name, fallback = "") {
   const value = process.env[name];
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+  return typeof value === "string" && value.trim() ? normalizeEnvValue(value) : fallback;
 }
 
 function getAllowedOrigins() {
@@ -907,4 +919,3 @@ const server = http.createServer((req, res) => {
 server.listen(port, "0.0.0.0", () => {
   console.log(`[delphi-proxy] listening on 0.0.0.0:${port}`);
 });
-

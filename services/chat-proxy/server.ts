@@ -2,10 +2,22 @@ import http from "node:http";
 import { Readable } from "node:stream";
 import { handleChatRequest } from "./index.ts";
 
+function normalizeEnvValue(value: string): string {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 function env(name: string, fallback = ""): string {
   const processValue = typeof process !== "undefined" ? process.env?.[name] : undefined;
   if (typeof processValue === "string" && processValue.trim()) {
-    return processValue.trim();
+    return normalizeEnvValue(processValue);
   }
 
   const denoRuntime = globalThis as typeof globalThis & {
@@ -17,7 +29,7 @@ function env(name: string, fallback = ""): string {
   };
   const denoValue = typeof denoRuntime.Deno?.env?.get === "function" ? denoRuntime.Deno.env.get(name) : undefined;
   if (typeof denoValue === "string" && denoValue.trim()) {
-    return denoValue.trim();
+    return normalizeEnvValue(denoValue);
   }
 
   return fallback;
