@@ -22,9 +22,26 @@ from .schemas import (
     SelectedColumns,
 )
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-MAX_ROWS = int(os.getenv("MAX_ROWS", "5000"))
-INTERNAL_API_TOKEN = os.getenv("INTERNAL_API_TOKEN")
+def _normalize_env_value(value: str | None, fallback: str | None = None) -> str | None:
+    if value is None:
+        return fallback
+
+    trimmed = value.strip()
+    if not trimmed:
+        return fallback
+
+    if len(trimmed) >= 2 and (
+        (trimmed.startswith('"') and trimmed.endswith('"'))
+        or (trimmed.startswith("'") and trimmed.endswith("'"))
+    ):
+        trimmed = trimmed[1:-1].strip()
+
+    return trimmed or fallback
+
+
+LOG_LEVEL = (_normalize_env_value(os.getenv("LOG_LEVEL"), "INFO") or "INFO").upper()
+MAX_ROWS = int(_normalize_env_value(os.getenv("MAX_ROWS"), "5000") or "5000")
+INTERNAL_API_TOKEN = _normalize_env_value(os.getenv("INTERNAL_API_TOKEN"))
 
 logging.basicConfig(
     level=LOG_LEVEL,
