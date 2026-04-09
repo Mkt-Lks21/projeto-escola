@@ -77,7 +77,7 @@ Sua funcao e ler a solicitacao do usuario e decidir quais agentes especialistas 
 
 DOMINIOS E TABELAS:
 1) ComercialAgent: CLIENTE, CLIENTE_TIPOVINCULO, CLIENTE_END, ATENDIMENTO, PROSPECCAO.
-2) FinanceiroAgent: FINANCEIRO_MOTIVO, FINANCEIRO_HISTORICO, FINANCEIRO_TRANSFERENCIACONTA, RECEBIMENTO_TIPO, RECEBIMENTO_TIPO_EMPRESA, CONTA.
+2) FinanceiroAgent: FINANCEIRO, FINANCEIRO_MOTIVO, FINANCEIRO_TRANSFERENCIACONTA, RECEBIMENTO_TIPO, RECEBIMENTO_TIPO_EMPRESA, CONTA, CENTRO_CUSTO, FRANQUIA_FECHAMENTO.
 3) CaixaBancosAgent: CAIXA_IDENTIFICACAO, CAIXA_FLUXO, BANCO.
 4) ProdutosAgent: PRODUTO, PRODUTO_GRUPO, PRODUTO_TIPOITEM, PRODUTO_TABVALOR_ITEM.
 5) EstoqueAgent: PRODUTO_ESTOQUE, PRODUTO_ESTOQUECLASSIFICACAO, ESTOQUE_HISTORICO.
@@ -88,10 +88,13 @@ REGRAS:
 - Se for bate-papo sem necessidade de dados estruturados, retorne selectedWorkers vazio [].
 - Nao invente workers fora da lista.
 - Sinais de comercial e CRM (venda, faturamento, pedido, atendimento, cliente, vendedor, lead, prospeccao, conversao, desconto, comissao, devolucao, frete) devem incluir ComercialAgent.
-- Sinais financeiros (pagamento, recebimento, financeiro, parcelas, titulos) devem incluir FinanceiroAgent.
+- Sinais financeiros (pagamento, recebimento, financeiro, parcelas, titulos, contas a receber, contas a pagar, vencimento, baixa, inadimplencia, boleto, pix, conciliacao, acordo, renegociacao, franquia, centro de custo, forma de pagamento, fluxo de caixa) devem incluir FinanceiroAgent.
+- Sinais de estoque (ruptura, saldo de estoque, subestoque, capital imobilizado, obsolescencia, giro, markup, precificacao, custo de estoque, divergencia, acuracia) devem incluir EstoqueAgent.
 - Para perguntas de vendas e faturamento por periodo (ex: "quanto foi vendido em outubro de 2025"), priorize ComercialAgent.
 - Inclua FinanceiroAgent junto com ComercialAgent somente quando a pergunta mencionar recebimento, baixa, parcelas, titulos, inadimplencia ou situacao financeira.
-- Produtos/itens/grupos => ProdutosAgent. Estoque/movimentacao => EstoqueAgent. Caixa/banco => CaixaBancosAgent.
+- Produtos/itens/grupos/categorias em nivel de cadastro, catalogo ou tabela de preco => ProdutosAgent.
+- Saldo em estoque, ruptura, subestoque, capital imobilizado, custo, markup, precificacao, obsolescencia, divergencia, acuracia ou inventario => EstoqueAgent.
+- Caixa/banco/tesouraria explicitos => CaixaBancosAgent.
 
 Retorne APENAS JSON valido no formato:
 {
@@ -157,8 +160,27 @@ function inferWorkersFromKeywords(userMessage: string): { workers: WorkerName[];
   const selected = new Set<WorkerName>();
   const reasons: string[] = [];
 
+  const hasInventoryContext =
+    /\b(estoque|inventario|subestoque|ruptura|obsolescencia|acuracia|divergencia|recompra|capital imobilizado|estoque parado|giro de estoque)\b/.test(
+      normalized,
+    ) ||
+    (
+      /\b(produto|produtos|item|itens)\b/.test(normalized) &&
+      /\b(saldo|minimo|maximo|markup|precificacao|preco|custo|margem|ruptura|excesso|potencial)\b/.test(
+        normalized,
+      )
+    );
+
+  const hasFinancialContext =
+    /\b(financeiro|pagamento|pagamentos|recebimento|receber|recebido|titulo|titulos|parcela|parcelas|baixa|baixado|baixadas|juros|multa|inadimplencia|vencimento|boleto|pix|conciliacao|acordo|acordos|renegociacao|renegociacoes|franquia|franquias|tesouraria)\b/.test(
+      normalized,
+    ) ||
+    /\b(contas?\s+a\s+receber|contas?\s+a\s+pagar|centro de custo|forma de pagamento|fluxo de caixa)\b/.test(
+      normalized,
+    );
+
   if (
-    /\b(venda|vendas|vendido|vendida|vendeu|vendedor|vendedores|faturamento|faturado|faturou|pedido|pedidos|atendimento|ticket|receita|desconto|descontos|comissao|comissoes|devolucao|devolucoes|frete|fretes)\b/.test(
+    /\b(venda|vendas|vendido|vendida|vendeu|vendedor|vendedores|faturamento|faturado|faturou|pedido|pedidos|atendimento|ticket|desconto|descontos|comissao|comissoes|devolucao|devolucoes|frete|fretes)\b/.test(
       normalized,
     )
   ) {
@@ -166,26 +188,27 @@ function inferWorkersFromKeywords(userMessage: string): { workers: WorkerName[];
     reasons.push("sales_signal");
   }
 
-  if (
-    /\b(financeiro|pagamento|pagamentos|recebimento|receber|recebido|titulo|titulos|parcela|parcelas|baixa|baixado|baixadas|juros|multa|inadimplencia)\b/.test(
-      normalized,
-    )
-  ) {
+  if (/\breceita\b/.test(normalized) && !hasFinancialContext && !hasInventoryContext) {
+    selected.add("ComercialAgent");
+    reasons.push("revenue_signal");
+  }
+
+  if (hasFinancialContext) {
     selected.add("FinanceiroAgent");
     reasons.push("financial_signal");
   }
 
-  if (/\b(caixa|banco|fluxo|tesouraria)\b/.test(normalized)) {
+  if (/\b(caixa|banco|bancos|tesouraria)\b/.test(normalized)) {
     selected.add("CaixaBancosAgent");
     reasons.push("cash_bank_signal");
   }
 
-  if (/\b(produto|produtos|item|itens|categoria|grupo|grupos)\b/.test(normalized)) {
+  if (/\b(produto|produtos|item|itens|categoria|grupo|grupos)\b/.test(normalized) && !hasInventoryContext) {
     selected.add("ProdutosAgent");
     reasons.push("product_signal");
   }
 
-  if (/\b(estoque|inventario|movimentacao|movimento|entrada|saida)\b/.test(normalized)) {
+  if (hasInventoryContext || /\b(movimentacao de estoque|movimento de estoque)\b/.test(normalized)) {
     selected.add("EstoqueAgent");
     reasons.push("inventory_signal");
   }

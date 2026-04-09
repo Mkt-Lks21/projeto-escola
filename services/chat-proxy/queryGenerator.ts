@@ -267,16 +267,29 @@ REGRAS ESTRITAS:
 9. ORDER BY e OBRIGATORIO em TODA query. Nunca use ORDER BY por posicao (ex: ORDER BY 1,2,3).
 10. ORDER BY deve usar nomes explicitos de colunas ou aliases do SELECT.
 11. Se o usuario nao indicar ordenacao, escolha uma coluna estavel (data/id) para manter consistencia.
-12. Para perguntas do dominio comercial (vendas, faturamento, pedidos, clientes, vendedores, descontos, devolucoes, frete, prospeccao), priorize ATENDIMENTO e use CLIE_ID_VENDEDOR para relacionar com CLIENTE quando precisar do vendedor.
+12. Para perguntas do dominio comercial em nivel de venda, pedido ou atendimento (vendas, faturamento, pedidos, clientes, vendedores, descontos, devolucoes, frete, prospeccao), priorize ATENDIMENTO e use CLIE_ID_VENDEDOR para relacionar com CLIENTE quando precisar do vendedor.
 13. Para vendas sem metrica explicitamente definida, prefira ATEN_VLTOTALLIQUIDO como valor padrao, pois ja deduz devolucoes.
-14. Use ATEN_VLLIQUIDO apenas quando o usuario pedir valor liquido sem deduzir devolucao. Use ATEN_VLBAIXADOLIQUIDO apenas para valores efetivamente recebidos, baixados, caixa ou financeiro.
+14. Use ATEN_VLLIQUIDO apenas quando o usuario pedir valor liquido sem deduzir devolucao. Use ATEN_VLBAIXADOLIQUIDO apenas para valores efetivamente recebidos no nivel consolidado do atendimento, nunca como substituto automatico da analise de parcelas do FINANCEIRO.
 15. Para tabelas usadas na query que tiverem coluna sufixo _ID_DEL, aplique filtro de ativo com IS NULL.
 16. Em ATENDIMENTO, exclua orcamentos por padrao com ATEN_STTIPO = 'V', exceto quando o usuario pedir orcamento explicitamente.
 17. Para perguntas de faturamento por periodo (ex: "quanto foi vendido em outubro de 2025"), priorize consulta agregada com SUM no periodo solicitado e retorne apenas o necessario para responder o valor.
 18. Quando a pergunta for de total vendido em um periodo unico, evite granularidade por cliente/produto; retorne uma unica linha agregada com alias semantico (ex: total_vendido).
 19. Para analises semanais de vendas, agrupe por semana usando ATEN_DTEMISSAO como base temporal.
-20. Para perguntas financeiras de "recebido", "a receber", "pendente", "saldo" ou "status financeiro", prefira ATEN_VLBAIXADOLIQUIDO para recebido, ATEN_VLSALDO para pendente e use COALESCE(SUM(campo), 0) nas agregacoes monetarias.
-21. Quando precisar de endereco ou regiao de entrega, use o caminho ATENDIMENTO -> CLIENTE_COMPRADOR -> CLIENTE_END. Nao ligue ATENDIMENTO diretamente a CLIENTE_END sem relacionamento explicito.
+20. Quando o schema ativo incluir FINANCEIRO e a pergunta estiver em nivel de titulo, parcela ou contas a receber/pagar (parcela, parcelas, titulo, titulos, baixa, baixado, vencimento, inadimplencia, juros, multa, fluxo de caixa, conciliacao, pix, boleto, contas a receber, contas a pagar), priorize FINANCEIRO.
+21. Em FINANCEIRO, use FIN_VLBAIXA para valor recebido, pago ou realizado; use FIN_SITUACAO = 'ABE' com FIN_DTBAIXA IS NULL para aberto, pendente ou em carteira; use FIN_DTVENCIMENTO, FIN_DTBAIXA, FIN_VLMULTA e FIN_VLJUROS para atraso ou inadimplencia.
+22. Em FINANCEIRO, use FIN_TIPO = 'E' para receitas e FIN_TIPO = 'S' para despesas.
+23. Nao use ATEN_STFINANCEIRO para responder perguntas em nivel de parcela ou titulo quando o schema ativo incluir FINANCEIRO. ATEN_STFINANCEIRO e um resumo do atendimento e pode coexistir com parcelas ainda abertas no FINANCEIRO.
+24. Para perguntas financeiras agregadas, prefira COALESCE(SUM(campo), 0) nas metricas monetarias.
+25. Quando precisar de endereco ou regiao de entrega, use o caminho ATENDIMENTO -> CLIENTE_COMPRADOR -> CLIENTE_END. Nao ligue ATENDIMENTO diretamente a CLIENTE_END sem relacionamento explicito.
+26. Para o dominio comercial desta base, considere que existem dados disponiveis de 02/02/2026 ate a data atual do servidor. Nao assuma dados anteriores a 02/02/2026.
+27. Se a pergunta mencionar periodos amplos como "este ano", "ano atual" ou equivalentes, respeite a janela real disponivel e limite a consulta ao intervalo existente na base.
+28. Se o usuario nao informar periodo em perguntas analiticas abertas, escolha uma janela padrao coerente com a intencao: ultimos 30 dias para resumos gerais, ultimas 8 semanas para analises semanais e ano corrente disponivel para consolidacoes anuais.
+29. Quando o schema ativo incluir PRODUTO_ESTOQUE e a pergunta for sobre saldo atual, ruptura, excesso, estoque minimo, estoque maximo, capital imobilizado, precificacao, markup, potencial de venda ou valor em estoque, priorize PRODUTO_ESTOQUE.
+30. Quando o schema ativo incluir ESTOQUE_HISTORICO e a pergunta mencionar historico, ultima movimentacao, evolucao de custo, data passada, snapshot anterior ou comparacao temporal, use ESTOQUE_HISTORICO.
+31. Para perguntas sobre subestoque, classificacao de estoque, divergencia ou acuracia de inventario, combine PRODUTO_ESTOQUE com PRODUTO_ESTOQUECLASSIFICACAO e compare PRODE_SALDO com a soma de PRODEC_SALDO por produto e empresa.
+32. Em estoque atual, use PRODE_SALDO * PRODE_CTMEDIO para capital investido ou custo total em estoque, e use PRODE_SALDO * PRODE_VLVENDA para faturamento potencial.
+33. Para ruptura, compare PRODE_SALDO com PRODE_SALDOMIN; para excesso, compare PRODE_SALDO com PRODE_SALDOMAX.
+34. Para margem e precificacao em estoque, use PRODE_VLVENDA, PRODE_CTMEDIO, impostos e custos adicionais, e proteja divisao por zero com NULLIF(PRODE_VLVENDA, 0).
 
 Retorne APENAS um objeto JSON.`;
 }

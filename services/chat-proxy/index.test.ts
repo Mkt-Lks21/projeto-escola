@@ -270,3 +270,128 @@ Deno.test("generateSqlQuery accepts structured fields and joins arrays from prov
     (Deno.env as unknown as { get: typeof Deno.env.get }).get = originalEnvGet;
   }
 });
+
+Deno.test("generateSqlQuery prompt separates atendimento summary from financeiro parcel analysis", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalEnvGet = Deno.env.get;
+  let capturedBody: any = null;
+
+  (Deno.env as unknown as { get: typeof Deno.env.get }).get = (key: string) =>
+    key === "GEMINI_API_KEY"
+      ? "test-key"
+      : key === "APP_TIMEZONE"
+      ? "America/Sao_Paulo"
+      : originalEnvGet.call(Deno.env, key);
+
+  (globalThis as any).fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null;
+
+    return new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: JSON.stringify({
+                    fields: "COALESCE(SUM(FINANCEIRO.FIN_VLBAIXA), 0) AS total_recebido",
+                    tables: "FINANCEIRO",
+                    cond: "FINANCEIRO.FIN_ID_DEL IS NULL",
+                    order: "total_recebido DESC",
+                  }),
+                },
+              ],
+            },
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 100,
+          candidatesTokenCount: 50,
+          totalTokenCount: 150,
+        },
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const result = await generateSqlQuery({
+      userMessage: "quero contas a receber em aberto por cliente",
+      activeSchemas: "Tabela: ATENDIMENTO\nTabela: FINANCEIRO",
+    });
+
+    assertEquals(result.shouldFallback, false);
+    const prompt = capturedBody?.system_instruction?.parts?.[0]?.text ?? "";
+    assertStringIncludes(prompt, "Quando o schema ativo incluir FINANCEIRO");
+    assertStringIncludes(prompt, "Nao use ATEN_STFINANCEIRO para responder perguntas em nivel de parcela ou titulo quando o schema ativo incluir FINANCEIRO");
+  } finally {
+    (globalThis as any).fetch = originalFetch;
+    (Deno.env as unknown as { get: typeof Deno.env.get }).get = originalEnvGet;
+  }
+});
+
+Deno.test("generateSqlQuery prompt includes estoque heuristics when inventory schema is active", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalEnvGet = Deno.env.get;
+  let capturedBody: any = null;
+
+  (Deno.env as unknown as { get: typeof Deno.env.get }).get = (key: string) =>
+    key === "GEMINI_API_KEY"
+      ? "test-key"
+      : key === "APP_TIMEZONE"
+      ? "America/Sao_Paulo"
+      : originalEnvGet.call(Deno.env, key);
+
+  (globalThis as any).fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null;
+
+    return new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: JSON.stringify({
+                    fields: "PRODUTO_ESTOQUE.PRODE_SALDO",
+                    tables: "PRODUTO_ESTOQUE",
+                    cond: "PRODUTO_ESTOQUE.PRODE_ID_DEL IS NULL",
+                    order: "PRODUTO_ESTOQUE.PRODE_SALDO DESC",
+                  }),
+                },
+              ],
+            },
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 100,
+          candidatesTokenCount: 50,
+          totalTokenCount: 150,
+        },
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const result = await generateSqlQuery({
+      userMessage: "quais produtos estao em ruptura de estoque",
+      activeSchemas: "Tabela: PRODUTO_ESTOQUE\nTabela: ESTOQUE_HISTORICO\nTabela: PRODUTO_ESTOQUECLASSIFICACAO",
+    });
+
+    assertEquals(result.shouldFallback, false);
+    const prompt = capturedBody?.system_instruction?.parts?.[0]?.text ?? "";
+    assertStringIncludes(prompt, "priorize PRODUTO_ESTOQUE");
+    assertStringIncludes(prompt, "use PRODE_SALDO * PRODE_CTMEDIO para capital investido");
+    assertStringIncludes(prompt, "Para ruptura, compare PRODE_SALDO com PRODE_SALDOMIN");
+  } finally {
+    (globalThis as any).fetch = originalFetch;
+    (Deno.env as unknown as { get: typeof Deno.env.get }).get = originalEnvGet;
+  }
+});

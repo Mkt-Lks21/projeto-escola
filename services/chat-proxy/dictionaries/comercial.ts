@@ -8,13 +8,18 @@ Definicoes Operacionais do Dominio Comercial:
 - Para vendas, a data padrao e ATEN_DTEMISSAO.
 - Para vendas sem metrica explicitamente definida, use ATEN_VLTOTALLIQUIDO como valor padrao, pois ja deduz devolucao.
 - Use ATEN_VLLIQUIDO apenas quando a pergunta pedir valor liquido sem deduzir devolucoes.
-- Use ATEN_VLBAIXADOLIQUIDO apenas para perguntas sobre valor efetivamente recebido, baixado, caixa ou recebido no financeiro.
-- Para analises financeiras, diferencie claramente: ATEN_VLTOTALLIQUIDO = valor vendido, ATEN_VLBAIXADOLIQUIDO = valor efetivamente recebido, ATEN_VLSALDO = valor pendente.
+- Use ATEN_VLBAIXADOLIQUIDO apenas para perguntas sobre valor efetivamente recebido no nivel consolidado do atendimento.
+- Para analises financeiras, diferencie claramente: ATEN_VLTOTALLIQUIDO = valor vendido, ATEN_VLBAIXADOLIQUIDO = valor efetivamente recebido no atendimento, ATEN_VLSALDO = valor pendente no atendimento.
+- ATEN_STFINANCEIRO resume a situacao financeira do atendimento, mas nao substitui a analise detalhada de parcelas ou titulos.
 - Para vendas reais, aplique por padrao ATEN_STTIPO = 'V', ATEN_ID_DEL IS NULL e, quando fizer sentido para a operacao, ATEN_STCANCELADO = 'N'.
 - Quando a tabela tiver EMP_ID e o usuario nao especificar outra empresa, aplique EMP_ID = 1.
 - Para analises semanais, use ATEN_DTEMISSAO como base temporal e agregue por semana.
 - Para cliente comprador, prefira o alias CLIENTE_COMPRADOR. Para vendedor, prefira o alias VENDEDOR.
 - Para endereco do cliente ou regiao de entrega, prefira o caminho ATENDIMENTO -> CLIENTE_COMPRADOR -> CLIENTE_END. Evite ligar ATENDIMENTO diretamente a CLIENTE_END sem um campo de relacionamento explicito.
+- Janela temporal conhecida deste dominio: existem dados comerciais disponiveis a partir de 02/02/2026 ate a data atual do servidor.
+- Se o usuario pedir um periodo anterior a 02/02/2026, reconheca que a base disponivel comeca em 02/02/2026 e restrinja a consulta a partir desta data.
+- Se o usuario pedir "este ano", "no ano", "ano atual" ou equivalentes, considere o ano corrente apenas dentro da janela realmente disponivel na base.
+- Se o usuario nao informar periodo em perguntas analiticas amplas, prefira uma janela recente coerente com a intencao: ultimos 30 dias para resumos gerais, ultimas 8 semanas para analises semanais e ano corrente disponivel para consolidacoes anuais.
 
 Consultas de Negocio Essenciais (padroes de referencia, nao templates fixos):
 1. Vendas Totais por Periodo (Mes/Trimestre)
@@ -47,6 +52,7 @@ Consultas de Negocio Essenciais (padroes de referencia, nao templates fixos):
 - Campos principais: ATEN_STFINANCEIRO, ATEN_VLTOTALLIQUIDO, ATEN_VLJARECEBIDO, ATEN_VLBAIXADOLIQUIDO, ATEN_VLSALDO.
 - Regra de leitura: use ATEN_VLTOTALLIQUIDO para total vendido, ATEN_VLBAIXADOLIQUIDO para total recebido e ATEN_VLSALDO para o que ainda falta receber.
 - Interpretacao padrao: ATEN_STFINANCEIRO = 1 significa A RECEBER; ATEN_STFINANCEIRO = 2 significa RECEBIDO.
+- Regra de escopo: este padrao vale para leitura no nivel do atendimento ou pedido, sem detalhar parcelas individuais.
 - Agregacao recomendada: por status financeiro com totalizacoes; prefira COALESCE(SUM(...), 0) para evitar totais nulos.
 
 5. Clientes Inativos (Sem Compras ha X Meses)
