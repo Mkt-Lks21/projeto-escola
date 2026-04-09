@@ -275,6 +275,8 @@ REGRAS ESTRITAS:
 17. Para perguntas de faturamento por periodo (ex: "quanto foi vendido em outubro de 2025"), priorize consulta agregada com SUM no periodo solicitado e retorne apenas o necessario para responder o valor.
 18. Quando a pergunta for de total vendido em um periodo unico, evite granularidade por cliente/produto; retorne uma unica linha agregada com alias semantico (ex: total_vendido).
 19. Para analises semanais de vendas, agrupe por semana usando ATEN_DTEMISSAO como base temporal.
+20. Para perguntas financeiras de "recebido", "a receber", "pendente", "saldo" ou "status financeiro", prefira ATEN_VLBAIXADOLIQUIDO para recebido, ATEN_VLSALDO para pendente e use COALESCE(SUM(campo), 0) nas agregacoes monetarias.
+21. Quando precisar de endereco ou regiao de entrega, use o caminho ATENDIMENTO -> CLIENTE_COMPRADOR -> CLIENTE_END. Nao ligue ATENDIMENTO diretamente a CLIENTE_END sem relacionamento explicito.
 
 Retorne APENAS um objeto JSON.`;
 }

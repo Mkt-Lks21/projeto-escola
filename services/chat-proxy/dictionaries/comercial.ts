@@ -9,22 +9,99 @@ Definicoes Operacionais do Dominio Comercial:
 - Para vendas sem metrica explicitamente definida, use ATEN_VLTOTALLIQUIDO como valor padrao, pois ja deduz devolucao.
 - Use ATEN_VLLIQUIDO apenas quando a pergunta pedir valor liquido sem deduzir devolucoes.
 - Use ATEN_VLBAIXADOLIQUIDO apenas para perguntas sobre valor efetivamente recebido, baixado, caixa ou recebido no financeiro.
+- Para analises financeiras, diferencie claramente: ATEN_VLTOTALLIQUIDO = valor vendido, ATEN_VLBAIXADOLIQUIDO = valor efetivamente recebido, ATEN_VLSALDO = valor pendente.
 - Para vendas reais, aplique por padrao ATEN_STTIPO = 'V', ATEN_ID_DEL IS NULL e, quando fizer sentido para a operacao, ATEN_STCANCELADO = 'N'.
 - Quando a tabela tiver EMP_ID e o usuario nao especificar outra empresa, aplique EMP_ID = 1.
 - Para analises semanais, use ATEN_DTEMISSAO como base temporal e agregue por semana.
 - Para cliente comprador, prefira o alias CLIENTE_COMPRADOR. Para vendedor, prefira o alias VENDEDOR.
+- Para endereco do cliente ou regiao de entrega, prefira o caminho ATENDIMENTO -> CLIENTE_COMPRADOR -> CLIENTE_END. Evite ligar ATENDIMENTO diretamente a CLIENTE_END sem um campo de relacionamento explicito.
 
 Consultas de Negocio Essenciais (padroes de referencia, nao templates fixos):
-1. Vendas totais por periodo: use ATENDIMENTO, ATEN_DTEMISSAO, ATEN_STTIPO = 'V' e agregacao por mes, trimestre ou ano.
-2. Top clientes por faturamento: use ATENDIMENTO + CLIENTE, agregando por cliente e ordenando pelo valor total.
-3. Desempenho de vendedores: use ATENDIMENTO + CLIENTE como VENDEDOR e destaque total vendido, pedidos, ticket medio e desconto.
-4. Status financeiro de vendas: use ATENDIMENTO e consolide ATEN_STFINANCEIRO, valor liquido, valor recebido e saldo.
-5. Clientes inativos: use CLIENTE + ATENDIMENTO para ultima compra, recencia e potencial de reativacao.
-6. Analise de descontos: use ATENDIMENTO e destaque ATEN_VLDESCONTO, percentual de desconto e responsavel.
-7. Prospeccao vs conversao: use PROSPECCAO + CLIENTE + ATENDIMENTO para medir conversao em venda.
-8. Devolucoes e reembolsos: use ATENDIMENTO com foco em ATEN_VLDEVOLUCAO e ATEN_VLTOTALLIQUIDO.
-9. Custos de frete por pedido ou regiao: use ATENDIMENTO + CLIENTE_END com foco em ATEN_VLFRETE.
-10. Historico transacional por cliente: use ATENDIMENTO + CLIENTE + CLIENTE_END em ordem cronologica.
+1. Vendas Totais por Periodo (Mes/Trimestre)
+- Objetivo: acompanhar evolucao das vendas ao longo do ano.
+- Tabelas: ATENDIMENTO.
+- Filtros padrao: ATEN_DTEMISSAO, ATEN_STTIPO = 'V', ATEN_STCANCELADO = 'N', ATEN_ID_DEL IS NULL.
+- Campos principais: data, quantidade de pedidos, ATEN_VLBRUTO, ATEN_VLDESCONTO, ATEN_VLTOTALLIQUIDO.
+- Agrupamento padrao: por mes, trimestre ou ano conforme a pergunta.
+
+2. Top 10 Clientes por Faturamento
+- Objetivo: identificar os maiores geradores de receita.
+- Tabelas: ATENDIMENTO + CLIENTE como CLIENTE_COMPRADOR.
+- JOIN recomendado: LEFT JOIN CLIENTE AS CLIENTE_COMPRADOR ON CLIENTE_COMPRADOR.CLIE_ID = ATENDIMENTO.CLIE_ID_CLIENTE.
+- Filtros padrao: periodo desejado, ATEN_STTIPO = 'V', ATEN_ID_DEL IS NULL.
+- Campos principais: CLIENTE_COMPRADOR.CLIE_NOMEPRINC, CLIENTE_COMPRADOR.CLIE_CPFCNPJ, quantidade de pedidos, valor total vendido, ticket medio.
+- Agrupamento padrao: por cliente, ordenado por faturamento decrescente.
+
+3. Desempenho de Vendedores
+- Objetivo: avaliar produtividade, comissoes e qualidade da venda.
+- Tabelas: ATENDIMENTO + CLIENTE como VENDEDOR.
+- JOIN recomendado: LEFT JOIN CLIENTE AS VENDEDOR ON VENDEDOR.CLIE_ID = ATENDIMENTO.CLIE_ID_VENDEDOR.
+- Filtros padrao: periodo, ATEN_STTIPO = 'V', ATEN_STPAGARCOMISSAO = 'S', ATEN_ID_DEL IS NULL.
+- Campos principais: nome do vendedor, total vendido, quantidade de pedidos, ticket medio, valor de desconto concedido.
+- Agrupamento padrao: por vendedor.
+
+4. Status Financeiro de Vendas
+- Objetivo: controlar o que foi recebido versus o que ainda falta receber.
+- Tabelas: ATENDIMENTO.
+- Filtros padrao: periodo desejado, ATEN_ID_DEL IS NULL.
+- Campos principais: ATEN_STFINANCEIRO, ATEN_VLTOTALLIQUIDO, ATEN_VLJARECEBIDO, ATEN_VLBAIXADOLIQUIDO, ATEN_VLSALDO.
+- Regra de leitura: use ATEN_VLTOTALLIQUIDO para total vendido, ATEN_VLBAIXADOLIQUIDO para total recebido e ATEN_VLSALDO para o que ainda falta receber.
+- Interpretacao padrao: ATEN_STFINANCEIRO = 1 significa A RECEBER; ATEN_STFINANCEIRO = 2 significa RECEBIDO.
+- Agregacao recomendada: por status financeiro com totalizacoes; prefira COALESCE(SUM(...), 0) para evitar totais nulos.
+
+5. Clientes Inativos (Sem Compras ha X Meses)
+- Objetivo: identificar oportunidades de reativacao e relacionamento.
+- Tabelas: CLIENTE + ATENDIMENTO.
+- JOIN recomendado: parta de CLIENTE e relacione ATENDIMENTO usando ATENDIMENTO.CLIE_ID_CLIENTE = CLIENTE.CLIE_ID.
+- Filtros padrao: ultima compra anterior a data de corte, CLIE_STATUS = 'S', CLIE_STCLIE = 'S', EMP_ID = 1 quando aplicavel.
+- Campos principais: nome do cliente, ultima data de compra, total gasto no lifetime, indicadores de recencia.
+- Regra importante: use agregacao para obter MAX(ATEN_DTEMISSAO) como ultima compra.
+
+6. Analise de Descontos Concedidos
+- Objetivo: monitorar concessoes e possiveis desvios de margem.
+- Tabelas: ATENDIMENTO + CLIENTE comprador e, quando necessario, CLIENTE como VENDEDOR.
+- Filtros padrao: ATEN_VLDESCONTO > 0, periodo desejado, ATEN_STTIPO = 'V', ATEN_ID_DEL IS NULL.
+- Campos principais: cliente, vendedor, valor original, valor do desconto, percentual de desconto, data da venda.
+- Analise padrao: identificar quem concede mais desconto, em quais clientes e em quais contextos de venda.
+
+7. Prospeccao vs Conversao em Venda
+- Objetivo: medir efetividade do funil comercial.
+- Tabelas: PROSPECCAO + CLIENTE + ATENDIMENTO.
+- Filtros padrao: status da prospeccao, tipo da prospeccao, periodo e conversao em venda quando aplicavel.
+- Campos principais: status da prospeccao, tipo, cliente prospectado, quantidade de vendas geradas, taxa de conversao.
+- Agrupamento padrao: por tipo de prospeccao ou status da prospeccao.
+
+8. Devolucoes e Reembolsos
+- Objetivo: analisar perdas financeiras e sinais de problema.
+- Tabelas: ATENDIMENTO.
+- Filtros padrao: ATEN_VLDEVOLUCAO > 0, periodo desejado, ATEN_ID_DEL IS NULL.
+- Campos principais: cliente comprador, data da venda, valor original, valor devolvido, percentual de devolucao.
+- JOIN recomendado quando precisar do cliente: LEFT JOIN CLIENTE AS CLIENTE_COMPRADOR ON CLIENTE_COMPRADOR.CLIE_ID = ATENDIMENTO.CLIE_ID_CLIENTE.
+- Metricas recomendadas: compare ATEN_VLTOTALLIQUIDO com ATEN_VLDEVOLUCAO para medir impacto da devolucao.
+
+9. Custos de Frete por Pedido/Regiao
+- Objetivo: otimizar logistica e proteger margem comercial.
+- Tabelas: ATENDIMENTO + CLIENTE como CLIENTE_COMPRADOR + CLIENTE_END.
+- Caminho recomendado: ATENDIMENTO -> CLIENTE_COMPRADOR -> CLIENTE_END.
+- JOIN recomendado: LEFT JOIN CLIENTE AS CLIENTE_COMPRADOR ON CLIENTE_COMPRADOR.CLIE_ID = ATENDIMENTO.CLIE_ID_CLIENTE; depois LEFT JOIN CLIENTE_END ON CLIENTE_END.CLIEE_ID = CLIENTE_COMPRADOR.CLIEE_IDENTREGA ou CLIENTE_COMPRADOR.CLIEE_IDRETIRADA conforme o contexto.
+- Filtros padrao: periodo desejado, ATEN_VLFRETE > 0, ATEN_ID_DEL IS NULL.
+- Campos principais: UF ou municipio de entrega, quantidade de pedidos, frete total, frete medio, valor da venda versus frete em percentual.
+- Agrupamento padrao: por regiao, UF ou municipio de entrega.
+
+10. Historico de Transacoes por Cliente (Cliente Especifico)
+- Objetivo: analisar o relacionamento completo com um cliente especifico.
+- Tabelas: ATENDIMENTO + CLIENTE como CLIENTE_COMPRADOR + CLIENTE_END.
+- Caminho recomendado: ATENDIMENTO -> CLIENTE_COMPRADOR -> CLIENTE_END.
+- Filtros padrao: CLIE_ID especifico ou cliente especifico, periodo como ultimos 12 meses quando o usuario nao informar outro.
+- Campos principais: data do pedido, tipo produto/servico, valor, desconto, status financeiro, endereco de entrega, observacoes.
+- Agrupamento padrao: cronologico; quando fizer sentido, inclua acumulados e totais do periodo.
+
+Dicas Extras: Campos Estrategicos para Monitorar
+- ATEN_STFINANCEIRO -> saude do caixa.
+- ATEN_VLDEVOLUCAO -> qualidade e satisfacao.
+- ATEN_VLDESCONTO -> controle de margens.
+- MKT_ID -> efetividade de marketing e origem comercial.
+- CLIE_ID_VENDEDOR + ATEN_STPAGARCOMISSAO -> gestao de comissoes.
 
 Tabela: ATENDIMENTO
 Descricao: Estrutura da tabela ATENDIMENTO no dominio Comercial e CRM.
