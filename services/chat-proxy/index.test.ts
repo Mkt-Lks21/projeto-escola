@@ -12,6 +12,7 @@ import {
   QUERY_GENERATOR_USER_FRIENDLY_ERROR,
   shouldGenerateChartResponse,
 } from "./index.ts";
+import { generateSqlQuery } from "./queryGenerator.ts";
 
 Deno.test("invokeDelphiProxy forwards the user authorization token and internal proxy key", async () => {
   const originalFetch = globalThis.fetch;
@@ -196,4 +197,76 @@ Deno.test("generateSqlQueryWithRetry returns successful payload from second atte
   assertEquals(result.queryPayload.shouldFallback, false);
   assertEquals(result.queryPayload.fields, "SUM(valor) AS total_vendido");
   assertEquals(result.usage.totalTokens, 15);
+});
+
+Deno.test("generateSqlQuery accepts structured fields and joins arrays from provider payload", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalEnvGet = Deno.env.get;
+  (Deno.env as unknown as { get: typeof Deno.env.get }).get = (key: string) =>
+    key === "GEMINI_API_KEY"
+      ? "test-key"
+      : key === "APP_TIMEZONE"
+      ? "America/Sao_Paulo"
+      : originalEnvGet.call(Deno.env, key);
+
+  (globalThis as any).fetch = async () =>
+    new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: JSON.stringify({
+                    fields: [
+                      "CLIENTE_COMPRADOR.CLIE_NOMEPRINC AS nome_cliente",
+                      "SUM(ATENDIMENTO.ATEN_VLTOTALLIQUIDO) AS faturamento_total",
+                    ],
+                    tables: ["ATENDIMENTO"],
+                    joins: [
+                      "LEFT JOIN CLIENTE AS CLIENTE_COMPRADOR ON CLIENTE_COMPRADOR.CLIE_ID = ATENDIMENTO.CLIE_ID_CLIENTE",
+                    ],
+                    cond:
+                      "ATENDIMENTO.EMP_ID = 1 AND ATENDIMENTO.ATEN_ID_DEL IS NULL AND ATENDIMENTO.ATEN_STTIPO = 'V' GROUP BY CLIENTE_COMPRADOR.CLIE_NOMEPRINC",
+                    order: "faturamento_total DESC",
+                    rowspPage: 10,
+                  }),
+                },
+              ],
+            },
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 100,
+          candidatesTokenCount: 50,
+          totalTokenCount: 150,
+        },
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+  try {
+    const result = await generateSqlQuery({
+      userMessage: "top 10 clientes por faturamento",
+      activeSchemas: "Tabela: ATENDIMENTO\nTabela: CLIENTE",
+    });
+
+    assertEquals(result.shouldFallback, false);
+    assertEquals(
+      result.fields,
+      "CLIENTE_COMPRADOR.CLIE_NOMEPRINC AS nome_cliente, SUM(ATENDIMENTO.ATEN_VLTOTALLIQUIDO) AS faturamento_total",
+    );
+    assertEquals(
+      result.tables,
+      "ATENDIMENTO LEFT JOIN CLIENTE AS CLIENTE_COMPRADOR ON CLIENTE_COMPRADOR.CLIE_ID = ATENDIMENTO.CLIE_ID_CLIENTE",
+    );
+    assertEquals(result.order, "faturamento_total DESC");
+    assertEquals(result.rowspPage, 10);
+  } finally {
+    (globalThis as any).fetch = originalFetch;
+    (Deno.env as unknown as { get: typeof Deno.env.get }).get = originalEnvGet;
+  }
 });

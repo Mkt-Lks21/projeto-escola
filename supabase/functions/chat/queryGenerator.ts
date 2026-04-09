@@ -133,6 +133,47 @@ function toTrimmedString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function toTrimmedStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => toTrimmedString(item))
+    .filter((item): item is string => Boolean(item));
+}
+
+function normalizeFieldsValue(value: unknown): string | undefined {
+  const direct = toTrimmedString(value);
+  if (direct) return direct;
+
+  const items = toTrimmedStringList(value);
+  return items.length > 0 ? items.join(", ") : undefined;
+}
+
+function normalizeTablesValue(tablesValue: unknown, joinsValue: unknown): string | undefined {
+  const direct = toTrimmedString(tablesValue);
+  const joinItems = toTrimmedStringList(joinsValue);
+  if (direct) {
+    if (joinItems.length === 0 || /\bjoin\b/i.test(direct)) {
+      return direct;
+    }
+    return `${direct} ${joinItems.join(" ")}`.trim();
+  }
+
+  const tableItems = toTrimmedStringList(tablesValue);
+  if (tableItems.length === 0) {
+    return undefined;
+  }
+
+  return [...tableItems, ...joinItems].join(" ").trim();
+}
+
+function normalizeOrderValue(value: unknown): string | undefined {
+  const direct = toTrimmedString(value);
+  if (direct) return direct;
+
+  const items = toTrimmedStringList(value);
+  return items.length > 0 ? items.join(", ") : undefined;
+}
+
 function toRowspPage(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed)) return undefined;
@@ -641,8 +682,8 @@ export async function generateSqlQuery({ userMessage, activeSchemas }: QueryGene
       };
     }
 
-    const fields = toTrimmedString(parsed?.fields);
-    const tables = toTrimmedString(parsed?.tables);
+    const fields = normalizeFieldsValue(parsed?.fields);
+    const tables = normalizeTablesValue(parsed?.tables, parsed?.joins);
     const rawCond = toTrimmedString(parsed?.cond);
 
     if (!fields || !tables || !rawCond) {
@@ -663,7 +704,7 @@ export async function generateSqlQuery({ userMessage, activeSchemas }: QueryGene
     });
     const cond = normalizedPayload.cond;
 
-    let order = toTrimmedString(parsed?.order);
+    let order = normalizeOrderValue(parsed?.order);
     if (!order || containsPositionalOrder(order)) {
       const reason = order ? "positional" : "missing";
       order = buildOrderFallback(fields, cond, tables);
