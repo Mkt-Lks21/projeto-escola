@@ -1,24 +1,24 @@
-import { MARKETING_SCHEMA } from "./marketing.ts";
+import { COMERCIAL_SCHEMA } from "./comercial.ts";
 import { FINANCEIRO_SCHEMA } from "./financeiro.ts";
 import { CAIXABANCOS_SCHEMA } from "./caixa_bancos.ts";
 import { PRODUTOS_SCHEMA } from "./produtos.ts";
 import { ESTOQUE_SCHEMA } from "./estoque.ts";
 
-export * from "./marketing.ts";
+export * from "./comercial.ts";
 export * from "./financeiro.ts";
 export * from "./caixa_bancos.ts";
 export * from "./produtos.ts";
 export * from "./estoque.ts";
 
 export type WorkerName =
-  | "MarketingAgent"
+  | "ComercialAgent"
   | "FinanceiroAgent"
   | "CaixaBancosAgent"
   | "ProdutosAgent"
   | "EstoqueAgent";
 
 const WORKER_SCHEMAS: Record<WorkerName, string> = {
-  MarketingAgent: MARKETING_SCHEMA,
+  ComercialAgent: COMERCIAL_SCHEMA,
   FinanceiroAgent: FINANCEIRO_SCHEMA,
   CaixaBancosAgent: CAIXABANCOS_SCHEMA,
   ProdutosAgent: PRODUTOS_SCHEMA,
@@ -26,7 +26,7 @@ const WORKER_SCHEMAS: Record<WorkerName, string> = {
 };
 
 const WORKER_ORDER: WorkerName[] = [
-  "MarketingAgent",
+  "ComercialAgent",
   "FinanceiroAgent",
   "CaixaBancosAgent",
   "ProdutosAgent",
