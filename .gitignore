@@ -75,3 +75,4 @@ postman
 ui-ux-pro-max-skill-main
 .vercel
 deploy/vps.env
+deploy/local.env

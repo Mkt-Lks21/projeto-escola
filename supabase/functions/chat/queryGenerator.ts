@@ -197,11 +197,14 @@ REGRAS ESTRITAS:
 9. ORDER BY e OBRIGATORIO em TODA query. Nunca use ORDER BY por posicao (ex: ORDER BY 1,2,3).
 10. ORDER BY deve usar nomes explicitos de colunas ou aliases do SELECT.
 11. Se o usuario nao indicar ordenacao, escolha uma coluna estavel (data/id) para manter consistencia.
-12. Para perguntas de vendas ou vendedor, priorize ATENDIMENTO e use CLIE_ID_VENDEDOR para relacionar com CLIENTE.
-13. Para tabelas usadas na query que tiverem coluna sufixo _ID_DEL, aplique filtro de ativo com IS NULL.
-14. Em ATENDIMENTO, exclua orcamentos por padrao com ATEN_STTIPO <> 'O', exceto quando o usuario pedir orcamento explicitamente.
-15. Para perguntas de faturamento por periodo (ex: "quanto foi vendido em outubro de 2025"), priorize consulta agregada com SUM no periodo solicitado e retorne apenas o necessario para responder o valor.
-16. Quando a pergunta for de total vendido em um periodo unico, evite granularidade por cliente/produto; retorne uma unica linha agregada com alias semantico (ex: total_vendido).
+12. Para perguntas do dominio comercial (vendas, faturamento, pedidos, clientes, vendedores, descontos, devolucoes, frete, prospeccao), priorize ATENDIMENTO e use CLIE_ID_VENDEDOR para relacionar com CLIENTE quando precisar do vendedor.
+13. Para vendas sem metrica explicitamente definida, prefira ATEN_VLTOTALLIQUIDO como valor padrao, pois ja deduz devolucoes.
+14. Use ATEN_VLLIQUIDO apenas quando o usuario pedir valor liquido sem deduzir devolucao. Use ATEN_VLBAIXADOLIQUIDO apenas para valores efetivamente recebidos, baixados, caixa ou financeiro.
+15. Para tabelas usadas na query que tiverem coluna sufixo _ID_DEL, aplique filtro de ativo com IS NULL.
+16. Em ATENDIMENTO, exclua orcamentos por padrao com ATEN_STTIPO = 'V', exceto quando o usuario pedir orcamento explicitamente.
+17. Para perguntas de faturamento por periodo (ex: "quanto foi vendido em outubro de 2025"), priorize consulta agregada com SUM no periodo solicitado e retorne apenas o necessario para responder o valor.
+18. Quando a pergunta for de total vendido em um periodo unico, evite granularidade por cliente/produto; retorne uma unica linha agregada com alias semantico (ex: total_vendido).
+19. Para analises semanais de vendas, agrupe por semana usando ATEN_DTEMISSAO como base temporal.
 
 Retorne APENAS um objeto JSON.`;
 }
@@ -530,7 +533,7 @@ function normalizeQueryPayload(input: {
   if (hasAtendimento && !askedForBudget && !hasAtenTipo) {
     const atendimentoRef = tableRefs.find((ref) => ref.table === "ATENDIMENTO");
     const qualifier = atendimentoRef?.alias || "ATENDIMENTO";
-    cond = injectIntoCond(cond, `${qualifier}.ATEN_STTIPO <> 'O'`);
+    cond = injectIntoCond(cond, `${qualifier}.ATEN_STTIPO = 'V'`);
     atendimentoTipoApplied = true;
   }
 

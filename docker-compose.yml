@@ -20,7 +20,7 @@ services:
       context: .
       dockerfile: services/delphi-proxy/Dockerfile
     env_file:
-      - ./deploy/vps.env
+      - ${PROJECT_ENV_FILE:-./deploy/vps.env}
     expose:
       - "8787"
     restart: unless-stopped
@@ -30,7 +30,7 @@ services:
       context: .
       dockerfile: services/chat-proxy/Dockerfile
     env_file:
-      - ./deploy/vps.env
+      - ${PROJECT_ENV_FILE:-./deploy/vps.env}
     expose:
       - "8789"
     restart: unless-stopped
@@ -40,7 +40,7 @@ services:
       context: .
       dockerfile: services/admin-proxy/Dockerfile
     env_file:
-      - ./deploy/vps.env
+      - ${PROJECT_ENV_FILE:-./deploy/vps.env}
     expose:
       - "8788"
     restart: unless-stopped
@@ -50,7 +50,7 @@ services:
       context: ./services/chart-processor
       dockerfile: Dockerfile
     env_file:
-      - ./deploy/vps.env
+      - ${PROJECT_ENV_FILE:-./deploy/vps.env}
     expose:
       - "8000"
     restart: unless-stopped

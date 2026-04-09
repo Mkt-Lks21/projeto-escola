@@ -10,7 +10,7 @@ export interface SupervisorInput {
 }
 
 export type WorkerName =
-  | "MarketingAgent"
+  | "ComercialAgent"
   | "FinanceiroAgent"
   | "CaixaBancosAgent"
   | "ProdutosAgent"
@@ -28,7 +28,7 @@ export interface SupervisorResult extends SupervisorDecision {
 }
 
 const VALID_WORKERS = new Set<WorkerName>([
-  "MarketingAgent",
+  "ComercialAgent",
   "FinanceiroAgent",
   "CaixaBancosAgent",
   "ProdutosAgent",
@@ -36,7 +36,7 @@ const VALID_WORKERS = new Set<WorkerName>([
 ]);
 
 const WORKER_PRIORITY: WorkerName[] = [
-  "MarketingAgent",
+  "ComercialAgent",
   "FinanceiroAgent",
   "CaixaBancosAgent",
   "ProdutosAgent",
@@ -47,7 +47,7 @@ const SUPERVISOR_PROMPT = `Voce e o Agente Supervisor de dados de um ERP/CRM.
 Sua funcao e ler a solicitacao do usuario e decidir quais agentes especialistas devem participar da resposta.
 
 DOMINIOS E TABELAS:
-1) MarketingAgent: CLIENTE, CLIENTE_TIPOVINCULO, CLIENTE_END, ATENDIMENTO, PROSPECCAO.
+1) ComercialAgent: CLIENTE, CLIENTE_TIPOVINCULO, CLIENTE_END, ATENDIMENTO, PROSPECCAO.
 2) FinanceiroAgent: FINANCEIRO_MOTIVO, FINANCEIRO_HISTORICO, FINANCEIRO_TRANSFERENCIACONTA, RECEBIMENTO_TIPO, RECEBIMENTO_TIPO_EMPRESA, CONTA.
 3) CaixaBancosAgent: CAIXA_IDENTIFICACAO, CAIXA_FLUXO, BANCO.
 4) ProdutosAgent: PRODUTO, PRODUTO_GRUPO, PRODUTO_TIPOITEM, PRODUTO_TABVALOR_ITEM.
@@ -58,15 +58,16 @@ REGRAS:
 - Se envolver cruzamento de dominios, retorne todos os workers necessarios.
 - Se for bate-papo sem necessidade de dados estruturados, retorne selectedWorkers vazio [].
 - Nao invente workers fora da lista.
-- Sinais de vendas (venda, vendido, vendeu, vendedor, faturamento, faturado, pedidos, atendimento) devem incluir MarketingAgent (ATENDIMENTO).
+- Sinais de comercial e CRM (venda, faturamento, pedido, atendimento, cliente, vendedor, lead, prospeccao, conversao, desconto, comissao, devolucao, frete) devem incluir ComercialAgent.
 - Sinais financeiros (pagamento, recebimento, financeiro, parcelas, titulos) devem incluir FinanceiroAgent.
-- Para perguntas de faturamento por periodo (ex: "quanto foi vendido em outubro de 2025"), priorize MarketingAgent e FinanceiroAgent juntos.
+- Para perguntas de vendas e faturamento por periodo (ex: "quanto foi vendido em outubro de 2025"), priorize ComercialAgent.
+- Inclua FinanceiroAgent junto com ComercialAgent somente quando a pergunta mencionar recebimento, baixa, parcelas, titulos, inadimplencia ou situacao financeira.
 - Produtos/itens/grupos => ProdutosAgent. Estoque/movimentacao => EstoqueAgent. Caixa/banco => CaixaBancosAgent.
 
 Retorne APENAS JSON valido no formato:
 {
   "reasoning": "justificativa curta citando dominios/tabelas",
-  "selectedWorkers": ["MarketingAgent"],
+  "selectedWorkers": ["ComercialAgent"],
   "confidenceScore": 0.95
 }`;
 
@@ -128,16 +129,16 @@ function inferWorkersFromKeywords(userMessage: string): { workers: WorkerName[];
   const reasons: string[] = [];
 
   if (
-    /\b(venda|vendas|vendido|vendida|vendeu|vendedor|vendedores|faturamento|faturado|faturou|pedido|pedidos|atendimento|ticket|receita)\b/.test(
+    /\b(venda|vendas|vendido|vendida|vendeu|vendedor|vendedores|faturamento|faturado|faturou|pedido|pedidos|atendimento|ticket|receita|desconto|descontos|comissao|comissoes|devolucao|devolucoes|frete|fretes)\b/.test(
       normalized,
     )
   ) {
-    selected.add("MarketingAgent");
+    selected.add("ComercialAgent");
     reasons.push("sales_signal");
   }
 
   if (
-    /\b(financeiro|pagamento|pagamentos|recebimento|receber|titulo|titulos|parcela|parcelas|liquido|juros|multa|conta)\b/.test(
+    /\b(financeiro|pagamento|pagamentos|recebimento|receber|recebido|titulo|titulos|parcela|parcelas|baixa|baixado|baixadas|juros|multa|inadimplencia)\b/.test(
       normalized,
     )
   ) {
@@ -160,8 +161,8 @@ function inferWorkersFromKeywords(userMessage: string): { workers: WorkerName[];
     reasons.push("inventory_signal");
   }
 
-  if (/\b(cliente|clientes|crm|lead|prospeccao)\b/.test(normalized)) {
-    selected.add("MarketingAgent");
+  if (/\b(cliente|clientes|crm|lead|leads|prospeccao|prospeccoes|conversao|conversoes|funil)\b/.test(normalized)) {
+    selected.add("ComercialAgent");
     reasons.push("crm_signal");
   }
 

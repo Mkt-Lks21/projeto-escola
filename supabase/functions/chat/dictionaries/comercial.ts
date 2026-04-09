@@ -1,9 +1,18 @@
-export const MARKETING_SCHEMA = `
-Voce e o Agente Especialista em Marketing e CRM.
+export const COMERCIAL_SCHEMA = `
+Voce e o Agente Especialista em Comercial e CRM.
 Abaixo esta o seu dicionario de dados exclusivo. Use-o para selecionar tabelas e construir JOINs com seguranca.
 
+Definicoes Operacionais do Dominio Comercial:
+- Use ATENDIMENTO como tabela principal para vendas, faturamento e analise operacional.
+- Quando o usuario falar em vendas sem qualificador, use ATEN_VLTOTALLIQUIDO como metrica padrao.
+- ATEN_VLLIQUIDO nao desconta devolucoes; ATEN_VLTOTALLIQUIDO ja considera devolucoes abatidas.
+- Filtros padrao para vendas: ATEN_STTIPO = 'V', ATEN_ID_DEL IS NULL e ATEN_STCANCELADO = 'N'.
+- A data padrao para analise temporal e ATEN_DTEMISSAO.
+- Para agrupamento semanal, use ATEN_DTEMISSAO por semana.
+- Use como guia semantica: vendas por periodo, top clientes, desempenho de vendedores, status financeiro, clientes inativos, descontos, prospeccao versus conversao, devolucoes, frete e historico por cliente.
+
 Tabela: ATENDIMENTO
-Descricao: Estrutura da tabela ATENDIMENTO no dominio Marketing e CRM.
+Descricao: Estrutura da tabela ATENDIMENTO no dominio Comercial e CRM.
 Colunas:
 - ATEN_ID (int) - CHAVE;Campo único na tabela;S;1;1;0. (PK) (NOT NULL)
 - EMP_ID (int) - Vinculo com a tabela empresa.
@@ -98,7 +107,7 @@ Regra Critica de Relacionamentos (JOINs):
 - Para relacionar ATENDIMENTO com CLIENTE, use: LEFT JOIN CLIENTE ON CLIENTE.CLIE_ID = ATENDIMENTO.EXPE_IDRESPENTREGA
 
 Tabela: CLIENTE
-Descricao: Estrutura da tabela CLIENTE no dominio Marketing e CRM.
+Descricao: Estrutura da tabela CLIENTE no dominio Comercial e CRM.
 Colunas:
 - CLIE_ID (int) - CHAVE;Campo único na tabela;S;1;1;0. (PK) (FK -> CLIENTE.CLIE_ID) (NOT NULL)
 - EMP_ID (int) - Armazena a empresa em que o registro foi criado ou no caso de vendedor indica a empresa a qual trabalha.
@@ -282,7 +291,7 @@ Regra Critica de Relacionamentos (JOINs):
 - Para relacionar CLIENTE com RECEBIMENTO_TIPO, use: LEFT JOIN RECEBIMENTO_TIPO ON RECEBIMENTO_TIPO.PGTO_ID = CLIENTE.CLIE_PGTO_IDREC
 
 Tabela: CLIENTE_END
-Descricao: Estrutura da tabela CLIENTE_END no dominio Marketing e CRM.
+Descricao: Estrutura da tabela CLIENTE_END no dominio Comercial e CRM.
 Colunas:
 - CLIEE_ID (int) - CHAVE;Campo único na tabela;S;1;1;0. (PK) (NOT NULL)
 - CLIE_ID (int) - Campo vinculo com a TABLE cliente.
@@ -314,7 +323,7 @@ Colunas:
 - CLIEE_EMAILPRINC (varchar) - DADO UTILIZADO PARA GERAÇÃO DE NOTA COM ENDEREÇO DIFERENTE DO DESTINATARIO - E-MAIL.
 
 Tabela: CLIENTE_TIPOVINCULO
-Descricao: Estrutura da tabela CLIENTE_TIPOVINCULO no dominio Marketing e CRM.
+Descricao: Estrutura da tabela CLIENTE_TIPOVINCULO no dominio Comercial e CRM.
 Colunas:
 - CLIETV_ID (int) - CHAVE;Campo único na tabela;S;1;1;0. (PK) (NOT NULL)
 - CLIETV_NOME (varchar) - NOME;Armazena o nome do vinculo EX: Pai Mãe Filho;S;1;1;0.
@@ -328,7 +337,7 @@ Colunas:
 - CLIETV_ID_FILIAL (int) - DADO EXCLUSIVO DA EMPRESA;Campo usado para poder definir um dado exclusivo de um empresaEste dado virá da tabela EMPRESA=EMP_ID;N;S;S;S.
 
 Tabela: PROSPECCAO
-Descricao: Estrutura da tabela PROSPECCAO no dominio Marketing e CRM.
+Descricao: Estrutura da tabela PROSPECCAO no dominio Comercial e CRM.
 Colunas:
 - PROS_ID (int) - Chave sequencial da tabela. (PK) (NOT NULL)
 - PROS_STATUS (varchar) - Status:  FECHADO = Finalizou o processo de contato ABERTO = Em contato / tentando contato com o cliente.
