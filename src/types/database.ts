@@ -37,6 +37,20 @@ export interface DatabaseMetadata {
   cached_at: string;
 }
 
+export interface FrontendErrorLog {
+  id: string;
+  user_id: string;
+  category: string;
+  stage: string | null;
+  code: string | null;
+  message: string;
+  pathname: string | null;
+  user_agent: string | null;
+  conversation_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
 export const OPENAI_MODELS = [
   "gpt-4o",
   "gpt-4o-mini",

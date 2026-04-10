@@ -4,6 +4,7 @@ import {
   Conversation,
   LLMSettings,
   DatabaseMetadata,
+  FrontendErrorLog,
   Agent,
   AgentTable,
   UserProfile,
@@ -11,6 +12,45 @@ import {
 } from "@/types/database";
 
 const PROFILE_AVATAR_BUCKET = "profile-avatars";
+const FRONTEND_ERROR_LOG_QUEUE_KEY = "pendingFrontendErrorLogs";
+const MAX_PENDING_FRONTEND_ERROR_LOGS = 50;
+
+export type FrontendApiErrorStage = "auth" | "createConversation" | "createMessage";
+
+export class AppApiError extends Error {
+  stage: FrontendApiErrorStage;
+  code?: string;
+  retryable: boolean;
+
+  constructor({
+    stage,
+    message,
+    code,
+    retryable = false,
+  }: {
+    stage: FrontendApiErrorStage;
+    message: string;
+    code?: string;
+    retryable?: boolean;
+  }) {
+    super(message);
+    this.name = "AppApiError";
+    this.stage = stage;
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
+
+export type FrontendErrorLogPayload = {
+  category: string;
+  message: string;
+  stage?: string | null;
+  code?: string | null;
+  conversationId?: string | null;
+  pathname?: string | null;
+  userAgent?: string | null;
+  metadata?: Record<string, unknown>;
+};
 
 function getBackendApiBaseUrl(): string {
   return import.meta.env.VITE_BACKEND_API_URL || `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
@@ -75,11 +115,146 @@ function normalizeUsageSummary(raw: any): UsageSummary {
   };
 }
 
+function extractErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return undefined;
+  }
+
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && code.trim() ? code.trim() : undefined;
+}
+
+function extractErrorMessage(error: unknown, fallbackMessage: string): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+
+  if (error && typeof error === "object") {
+    const candidate = (error as { message?: unknown; error?: unknown }).message
+      ?? (error as { message?: unknown; error?: unknown }).error;
+
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  return fallbackMessage;
+}
+
+function isBrowserRuntime(): boolean {
+  return typeof window !== "undefined" && typeof localStorage !== "undefined";
+}
+
+function sanitizeLogMetadata(metadata?: Record<string, unknown>): Record<string, unknown> {
+  if (!metadata) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(metadata)) as Record<string, unknown>;
+  } catch {
+    return {
+      serialization_failed: true,
+    };
+  }
+}
+
+function getRuntimePathname(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+function getRuntimeUserAgent(): string | null {
+  if (typeof navigator === "undefined") {
+    return null;
+  }
+
+  return navigator.userAgent || null;
+}
+
+function readPendingFrontendErrorLogs(): FrontendErrorLogPayload[] {
+  if (!isBrowserRuntime()) {
+    return [];
+  }
+
+  try {
+    const raw = localStorage.getItem(FRONTEND_ERROR_LOG_QUEUE_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as FrontendErrorLogPayload[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePendingFrontendErrorLogs(entries: FrontendErrorLogPayload[]) {
+  if (!isBrowserRuntime()) {
+    return;
+  }
+
+  const trimmedEntries = entries.slice(-MAX_PENDING_FRONTEND_ERROR_LOGS);
+
+  if (trimmedEntries.length === 0) {
+    localStorage.removeItem(FRONTEND_ERROR_LOG_QUEUE_KEY);
+    return;
+  }
+
+  localStorage.setItem(FRONTEND_ERROR_LOG_QUEUE_KEY, JSON.stringify(trimmedEntries));
+}
+
+function buildFrontendErrorLogRow(payload: FrontendErrorLogPayload) {
+  return {
+    category: payload.category,
+    stage: payload.stage ?? null,
+    code: payload.code ?? null,
+    message: payload.message,
+    conversation_id: payload.conversationId ?? null,
+    pathname: payload.pathname ?? getRuntimePathname(),
+    user_agent: payload.userAgent ?? getRuntimeUserAgent(),
+    metadata: sanitizeLogMetadata(payload.metadata),
+  };
+}
+
+function normalizeWriteError(
+  error: unknown,
+  stage: Exclude<FrontendApiErrorStage, "auth">,
+  fallbackMessage: string,
+): AppApiError {
+  if (error instanceof AppApiError) {
+    return error;
+  }
+
+  const code = extractErrorCode(error);
+
+  return new AppApiError({
+    stage,
+    code,
+    retryable: stage === "createMessage" && (code === "23503" || code === "42501"),
+    message: extractErrorMessage(error, fallbackMessage),
+  });
+}
+
 async function getCurrentUserId(): Promise<string> {
   const { data, error } = await supabase.auth.getUser();
-  if (error) throw error;
+  if (error) {
+    throw new AppApiError({
+      stage: "auth",
+      code: extractErrorCode(error) || "AUTH_SESSION_INVALID",
+      message: "Sessao expirada. Faca login novamente.",
+    });
+  }
   if (!data.user) {
-    throw new Error("Sessao expirada. Faca login novamente.");
+    throw new AppApiError({
+      stage: "auth",
+      code: "AUTH_SESSION_MISSING",
+      message: "Sessao expirada. Faca login novamente.",
+    });
   }
   return data.user.id;
 }
@@ -95,7 +270,8 @@ export async function getConversations(): Promise<Conversation[]> {
 }
 
 export async function createConversation(title?: string, agentId?: string): Promise<Conversation> {
-  const insertData: any = { title: title || "Nova Conversa" };
+  const userId = await getCurrentUserId();
+  const insertData: any = { title: title || "Nova Conversa", user_id: userId };
   if (agentId) insertData.agent_id = agentId;
 
   const { data, error } = await supabase
@@ -104,7 +280,9 @@ export async function createConversation(title?: string, agentId?: string): Prom
     .select()
     .single();
 
-  if (error) throw error;
+  if (error) {
+    throw normalizeWriteError(error, "createConversation", "Nao foi possivel criar a conversa.");
+  }
   return data;
 }
 
@@ -138,14 +316,84 @@ export async function createMessage(
   role: string,
   content: string
 ): Promise<Message> {
+  await getCurrentUserId();
+
   const { data, error } = await supabase
     .from("messages")
     .insert({ conversation_id: conversationId, role, content })
     .select()
     .single();
 
-  if (error) throw error;
+  if (error) {
+    throw normalizeWriteError(error, "createMessage", "Nao foi possivel salvar sua mensagem.");
+  }
   return data;
+}
+
+export async function flushPendingFrontendErrorLogs(): Promise<void> {
+  const pendingEntries = readPendingFrontendErrorLogs();
+  if (pendingEntries.length === 0) {
+    return;
+  }
+
+  const { data, error } = await supabase.auth.getSession();
+  if (error || !data.session?.access_token) {
+    return;
+  }
+
+  const rows = pendingEntries.map(buildFrontendErrorLogRow);
+  const { error: insertError } = await supabase.from("frontend_error_logs").insert(rows);
+
+  if (!insertError) {
+    writePendingFrontendErrorLogs([]);
+  }
+}
+
+export async function reportFrontendError(payload: FrontendErrorLogPayload): Promise<void> {
+  const pendingEntries = readPendingFrontendErrorLogs();
+  const nextEntries = [...pendingEntries, payload];
+  const { data, error } = await supabase.auth.getSession();
+
+  if (error || !data.session?.access_token) {
+    writePendingFrontendErrorLogs(nextEntries);
+    return;
+  }
+
+  const rows = nextEntries.map(buildFrontendErrorLogRow);
+  const { error: insertError } = await supabase.from("frontend_error_logs").insert(rows);
+
+  if (insertError) {
+    writePendingFrontendErrorLogs(nextEntries);
+    return;
+  }
+
+  writePendingFrontendErrorLogs([]);
+}
+
+export async function getMyFrontendErrorLogs(limit = 50): Promise<FrontendErrorLog[]> {
+  await flushPendingFrontendErrorLogs();
+
+  const { data, error } = await supabase
+    .from("frontend_error_logs")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+
+  return (data || []).map((row: any) => ({
+    id: String(row.id),
+    user_id: String(row.user_id),
+    category: String(row.category || ""),
+    stage: row.stage ? String(row.stage) : null,
+    code: row.code ? String(row.code) : null,
+    message: String(row.message || ""),
+    pathname: row.pathname ? String(row.pathname) : null,
+    user_agent: row.user_agent ? String(row.user_agent) : null,
+    conversation_id: row.conversation_id ? String(row.conversation_id) : null,
+    metadata: row.metadata && typeof row.metadata === "object" ? row.metadata as Record<string, unknown> : {},
+    created_at: String(row.created_at || ""),
+  }));
 }
 
 export async function getLLMSettings(): Promise<LLMSettings | null> {

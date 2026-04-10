@@ -2,6 +2,7 @@ import { createContext, useCallback, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
+import { flushPendingFrontendErrorLogs } from "@/lib/api";
 
 export interface AuthContextValue {
   session: Session | null;
@@ -38,6 +39,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
       setSession(data.session ?? null);
       setUser(data.session?.user ?? null);
       setIsAuthLoading(false);
+
+      if (data.session) {
+        void flushPendingFrontendErrorLogs();
+      }
     };
 
     void bootstrap();
@@ -49,6 +54,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
       setSession(nextSession ?? null);
       setUser(nextSession?.user ?? null);
       setIsAuthLoading(false);
+
+      if (nextSession) {
+        void flushPendingFrontendErrorLogs();
+      }
     });
 
     return () => {

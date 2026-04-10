@@ -159,6 +159,63 @@ export type Database = {
         }
         Relationships: []
       }
+      frontend_error_logs: {
+        Row: {
+          category: string
+          code: string | null
+          conversation_id: string | null
+          created_at: string
+          id: string
+          message: string
+          metadata: Json
+          pathname: string | null
+          stage: string | null
+          user_agent: string | null
+          user_id: string
+        }
+        Insert: {
+          category: string
+          code?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          message: string
+          metadata?: Json
+          pathname?: string | null
+          stage?: string | null
+          user_agent?: string | null
+          user_id?: string
+        }
+        Update: {
+          category?: string
+          code?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          message?: string
+          metadata?: Json
+          pathname?: string | null
+          stage?: string | null
+          user_agent?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "frontend_error_logs_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "frontend_error_logs_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       llm_settings: {
         Row: {
           api_key: string

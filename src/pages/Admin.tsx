@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { testExternalConnection } from "@/lib/api";
+import { getMyFrontendErrorLogs, testExternalConnection } from "@/lib/api";
 import { useMetadata } from "@/hooks/useMetadata";
+import { FrontendErrorLog } from "@/types/database";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -12,17 +13,45 @@ import {
 } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { RefreshCw, Database, Plug, CheckCircle2, XCircle, ArrowLeft } from "lucide-react";
+import { RefreshCw, Database, Plug, CheckCircle2, XCircle, ArrowLeft, Bug } from "lucide-react";
 import { toast } from "sonner";
 
+function formatDateTime(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "-";
+
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(parsed);
+}
 
 export default function Admin() {
   const navigate = useNavigate();
-  const { metadata, isLoading: metadataLoading, refresh, isRefreshing, groupedMetadata, refreshExternal, externalMetadata, externalGroupedMetadata } = useMetadata();
+  const { metadata, isLoading: metadataLoading, refresh, isRefreshing, groupedMetadata, refreshExternal, externalGroupedMetadata } = useMetadata();
 
   const [connectionStatus, setConnectionStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [connectionMessage, setConnectionMessage] = useState("");
   const [isLoadingExternal, setIsLoadingExternal] = useState(false);
+  const [frontendLogs, setFrontendLogs] = useState<FrontendErrorLog[]>([]);
+  const [isLoadingFrontendLogs, setIsLoadingFrontendLogs] = useState(true);
+
+  const loadFrontendLogs = async () => {
+    setIsLoadingFrontendLogs(true);
+
+    try {
+      const data = await getMyFrontendErrorLogs(50);
+      setFrontendLogs(data);
+    } catch (error) {
+      toast.error("Nao foi possivel carregar os logs do frontend.");
+    } finally {
+      setIsLoadingFrontendLogs(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadFrontendLogs();
+  }, []);
 
   const handleRefreshMetadata = async () => {
     try {
@@ -97,6 +126,10 @@ export default function Admin() {
             <TabsTrigger value="metadata" className="gap-2">
               <Database className="w-4 h-4" />
               Metadados
+            </TabsTrigger>
+            <TabsTrigger value="diagnostics" className="gap-2">
+              <Bug className="w-4 h-4" />
+              Logs Frontend
             </TabsTrigger>
           </TabsList>
 
@@ -260,6 +293,85 @@ export default function Admin() {
                             </div>
                           ))}
                         </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="diagnostics">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <CardTitle>Logs do Frontend</CardTitle>
+                    <CardDescription>
+                      Eventos capturados no navegador do usuario e sincronizados no Supabase.
+                    </CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => void loadFrontendLogs()}
+                    disabled={isLoadingFrontendLogs}
+                  >
+                    <RefreshCw className={`w-4 h-4 mr-2 ${isLoadingFrontendLogs ? "animate-spin" : ""}`} />
+                    Atualizar
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {isLoadingFrontendLogs ? (
+                  <p className="text-muted-foreground">Carregando logs do frontend...</p>
+                ) : frontendLogs.length === 0 ? (
+                  <p className="text-muted-foreground">
+                    Nenhum log sincronizado ainda. Quando um erro ocorrer no navegador, ele aparecera aqui.
+                  </p>
+                ) : (
+                  <div className="space-y-4">
+                    {frontendLogs.map((log) => (
+                      <div key={log.id} className="rounded-2xl glass-subtle p-4 space-y-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="secondary">{log.category}</Badge>
+                          {log.stage && <Badge variant="outline">{log.stage}</Badge>}
+                          {log.code && <Badge variant="destructive">{log.code}</Badge>}
+                          <span className="text-xs text-muted-foreground">
+                            {formatDateTime(log.created_at)}
+                          </span>
+                        </div>
+
+                        <div className="space-y-1">
+                          <p className="font-medium break-words">{log.message}</p>
+                          {log.pathname && (
+                            <p className="text-sm text-muted-foreground break-all">
+                              Rota: {log.pathname}
+                            </p>
+                          )}
+                          {log.conversation_id && (
+                            <p className="text-sm text-muted-foreground break-all">
+                              Conversa: {log.conversation_id}
+                            </p>
+                          )}
+                        </div>
+
+                        {log.user_agent && (
+                          <div className="space-y-1">
+                            <p className="text-xs font-medium text-muted-foreground">User Agent</p>
+                            <div className="rounded-xl bg-background/70 px-3 py-2 text-xs break-all">
+                              {log.user_agent}
+                            </div>
+                          </div>
+                        )}
+
+                        {Object.keys(log.metadata || {}).length > 0 && (
+                          <div className="space-y-1">
+                            <p className="text-xs font-medium text-muted-foreground">Metadata</p>
+                            <pre className="rounded-xl bg-background/70 px-3 py-2 text-xs overflow-x-auto whitespace-pre-wrap break-all">
+                              {JSON.stringify(log.metadata, null, 2)}
+                            </pre>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

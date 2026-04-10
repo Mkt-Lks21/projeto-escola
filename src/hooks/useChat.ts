@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback } from "react";
 import { Message, Conversation } from "@/types/database";
 import {
+  AppApiError,
   getConversations,
   createConversation,
   deleteConversation as apiDeleteConversation,
   getMessages,
   createMessage,
   transcribeChatAudio,
+  reportFrontendError,
   sendChatMessage,
   updateConversationTitle,
 } from "@/lib/api";
@@ -26,6 +28,85 @@ type ChatUsageError = {
 
 const CURRENT_CONVERSATION_STORAGE_KEY = "currentConversationId";
 
+type ChatSendStage =
+  | "ensureConversation"
+  | "persistUserMessage"
+  | "requestChat"
+  | "persistAssistantMessage";
+
+type ConversationContext = {
+  conversationId: string;
+  existingMessages: Message[];
+  isConversationEmpty: boolean;
+};
+
+function getErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return undefined;
+  }
+
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && code.trim() ? code.trim() : undefined;
+}
+
+function getErrorMessage(error: unknown, fallbackMessage: string): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) {
+      return message.trim();
+    }
+  }
+
+  return fallbackMessage;
+}
+
+function getUserFacingSendErrorMessage(error: unknown): string {
+  if (error instanceof AppApiError) {
+    if (error.stage === "auth") {
+      return error.message;
+    }
+
+    return "Nao foi possivel salvar sua mensagem.";
+  }
+
+  return getErrorMessage(error, "Erro ao enviar mensagem");
+}
+
+function logChatStageError(
+  stage: ChatSendStage,
+  conversationId: string | null,
+  error: unknown,
+  retried: boolean,
+  agentId?: string,
+) {
+  const message = getErrorMessage(error, "Erro desconhecido.");
+  const code = error instanceof AppApiError ? error.code : getErrorCode(error);
+
+  console.error("[useChat] sendMessage stage failed", {
+    stage,
+    conversationId,
+    code,
+    message,
+    retried,
+  });
+
+  void reportFrontendError({
+    category: "chat_send",
+    stage,
+    code,
+    conversationId,
+    message,
+    metadata: {
+      retried,
+      agentId: agentId ?? null,
+    },
+  });
+}
+
 export function useChat(agentId?: string, initialConversationId?: string) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(() => {
@@ -35,18 +116,45 @@ export function useChat(agentId?: string, initialConversationId?: string) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
+  const [hasLoadedConversations, setHasLoadedConversations] = useState(false);
 
-  useEffect(() => {
-    loadConversations();
+  const loadConversations = useCallback(async () => {
+    try {
+      const data = await getConversations();
+      setConversations(data);
+      setCurrentConversationId((previousConversationId) => {
+        if (!previousConversationId) return previousConversationId;
+
+        const exists = data.some((conversation) => conversation.id === previousConversationId);
+        return exists ? previousConversationId : null;
+      });
+    } catch (error) {
+      console.error("Failed to load conversations:", error);
+    } finally {
+      setHasLoadedConversations(true);
+    }
+  }, []);
+
+  const loadMessages = useCallback(async (conversationId: string) => {
+    try {
+      const data = await getMessages(conversationId);
+      setMessages(data);
+    } catch (error) {
+      console.error("Failed to load messages:", error);
+    }
   }, []);
 
   useEffect(() => {
+    void loadConversations();
+  }, [loadConversations]);
+
+  useEffect(() => {
     if (currentConversationId) {
-      loadMessages(currentConversationId);
+      void loadMessages(currentConversationId);
     } else {
       setMessages([]);
     }
-  }, [currentConversationId]);
+  }, [currentConversationId, loadMessages]);
 
   useEffect(() => {
     if (initialConversationId) {
@@ -63,27 +171,28 @@ export function useChat(agentId?: string, initialConversationId?: string) {
     localStorage.removeItem(CURRENT_CONVERSATION_STORAGE_KEY);
   }, [currentConversationId]);
 
-  const loadConversations = async () => {
-    try {
-      const data = await getConversations();
-      setConversations(data);
-    } catch (error) {
-      console.error("Failed to load conversations:", error);
-    }
-  };
-
-  const loadMessages = async (conversationId: string) => {
-    try {
-      const data = await getMessages(conversationId);
-      setMessages(data);
-    } catch (error) {
-      console.error("Failed to load messages:", error);
-    }
-  };
-
   const selectConversation = useCallback((id: string) => {
     setCurrentConversationId(id);
   }, []);
+
+  const prependConversation = useCallback((conversation: Conversation) => {
+    setConversations((previousConversations) => [
+      conversation,
+      ...previousConversations.filter((item) => item.id !== conversation.id),
+    ]);
+  }, []);
+
+  const createAndActivateConversation = useCallback(async (options?: { resetMessages?: boolean }) => {
+    const newConversation = await createConversation(undefined, agentId);
+    prependConversation(newConversation);
+    setCurrentConversationId(newConversation.id);
+
+    if (options?.resetMessages) {
+      setMessages([]);
+    }
+
+    return newConversation;
+  }, [agentId, prependConversation]);
 
   const deleteConversation = useCallback(async (id: string) => {
     try {
@@ -100,47 +209,106 @@ export function useChat(agentId?: string, initialConversationId?: string) {
 
   const createNewConversation = useCallback(async () => {
     try {
-      const newConversation = await createConversation(undefined, agentId);
-      setConversations((prev) => [newConversation, ...prev]);
-      setCurrentConversationId(newConversation.id);
+      const newConversation = await createAndActivateConversation({ resetMessages: true });
       return newConversation.id;
-    } catch {
+    } catch (error) {
+      console.error("Failed to create new conversation:", error);
       toast.error("Erro ao criar conversa");
       return undefined;
     }
-  }, [agentId]);
+  }, [createAndActivateConversation]);
 
-  const sendMessage = useCallback(async (content: string) => {
-    if (!content.trim()) return;
+  const ensureConversation = useCallback(async (): Promise<ConversationContext> => {
+    if (currentConversationId) {
+      if (!hasLoadedConversations || conversations.some((conversation) => conversation.id === currentConversationId)) {
+        return {
+          conversationId: currentConversationId,
+          existingMessages: messages,
+          isConversationEmpty: messages.length === 0,
+        };
+      }
 
-    setIsLoading(true);
-    setStreamingContent("");
+      try {
+        const replacementConversation = await createAndActivateConversation({ resetMessages: true });
+        toast.success("A conversa anterior ficou indisponivel. Criamos uma nova para voce.");
+        return {
+          conversationId: replacementConversation.id,
+          existingMessages: [],
+          isConversationEmpty: true,
+        };
+      } catch (error) {
+        logChatStageError("ensureConversation", currentConversationId, error, false, agentId);
+        throw error;
+      }
+    }
 
     try {
-      let conversationId = currentConversationId;
-      if (!conversationId) {
-        const newConversation = await createConversation(undefined, agentId);
-        setConversations((prev) => [newConversation, ...prev]);
-        conversationId = newConversation.id;
-        setCurrentConversationId(conversationId);
+      const newConversation = await createAndActivateConversation({ resetMessages: true });
+      return {
+        conversationId: newConversation.id,
+        existingMessages: [],
+        isConversationEmpty: true,
+      };
+    } catch (error) {
+      logChatStageError("ensureConversation", currentConversationId, error, false, agentId);
+      throw error;
+    }
+  }, [
+    agentId,
+    conversations,
+    createAndActivateConversation,
+    currentConversationId,
+    hasLoadedConversations,
+    messages,
+  ]);
+
+  const persistUserMessage = useCallback(async (
+    conversationContext: ConversationContext,
+    content: string,
+  ): Promise<ConversationContext & { userMessage: Message }> => {
+    try {
+      const userMessage = await createMessage(conversationContext.conversationId, "user", content);
+      return {
+        ...conversationContext,
+        userMessage,
+      };
+    } catch (error) {
+      if (error instanceof AppApiError && error.retryable) {
+        logChatStageError("persistUserMessage", conversationContext.conversationId, error, false, agentId);
+
+        let replacementConversation: Conversation;
+        try {
+          replacementConversation = await createAndActivateConversation({ resetMessages: true });
+          toast.success("A conversa anterior ficou indisponivel. Criamos uma nova para voce.");
+        } catch (replacementError) {
+          logChatStageError("persistUserMessage", conversationContext.conversationId, replacementError, true, agentId);
+          throw replacementError;
+        }
+
+        try {
+          const userMessage = await createMessage(replacementConversation.id, "user", content);
+          return {
+            conversationId: replacementConversation.id,
+            existingMessages: [],
+            isConversationEmpty: true,
+            userMessage,
+          };
+        } catch (retryError) {
+          logChatStageError("persistUserMessage", replacementConversation.id, retryError, true, agentId);
+          throw retryError;
+        }
       }
 
-      const userMessage = await createMessage(conversationId, "user", content);
-      setMessages((prev) => [...prev, userMessage]);
+      logChatStageError("persistUserMessage", conversationContext.conversationId, error, false, agentId);
+      throw error;
+    }
+  }, [agentId, createAndActivateConversation]);
 
-      if (messages.length === 0) {
-        const title = content.slice(0, 50) + (content.length > 50 ? "..." : "");
-        await updateConversationTitle(conversationId, title);
-        setConversations((prev) =>
-          prev.map((c) => (c.id === conversationId ? { ...c, title } : c))
-        );
-      }
-
-      const apiMessages = [
-        ...messages.map((m) => ({ role: m.role, content: m.content })),
-        { role: "user", content },
-      ];
-
+  const requestChat = useCallback(async (
+    apiMessages: { role: string; content: string }[],
+    conversationId: string,
+  ): Promise<Response> => {
+    try {
       const response = await sendChatMessage(apiMessages, conversationId, agentId);
 
       if (!response.ok) {
@@ -167,6 +335,59 @@ export function useChat(agentId?: string, initialConversationId?: string) {
 
         throw new Error(error.error || error.message || "Erro ao enviar mensagem");
       }
+
+      return response;
+    } catch (error) {
+      logChatStageError("requestChat", conversationId, error, false, agentId);
+      throw error;
+    }
+  }, [agentId]);
+
+  const persistAssistantMessage = useCallback(async (conversationId: string, content: string) => {
+    try {
+      return await createMessage(conversationId, "assistant", content);
+    } catch (error) {
+      logChatStageError("persistAssistantMessage", conversationId, error, false, agentId);
+      throw error;
+    }
+  }, [agentId]);
+
+  const sendMessage = useCallback(async (content: string) => {
+    if (!content.trim()) return;
+
+    setIsLoading(true);
+    setStreamingContent("");
+
+    try {
+      const conversationContext = await ensureConversation();
+      const persistedUserMessage = await persistUserMessage(conversationContext, content);
+      const { conversationId } = persistedUserMessage;
+
+      setMessages((previousMessages) => [...previousMessages, persistedUserMessage.userMessage]);
+
+      if (persistedUserMessage.isConversationEmpty) {
+        const title = content.slice(0, 50) + (content.length > 50 ? "..." : "");
+        try {
+          await updateConversationTitle(conversationId, title);
+          setConversations((previousConversations) =>
+            previousConversations.map((conversation) =>
+              conversation.id === conversationId ? { ...conversation, title } : conversation
+            )
+          );
+        } catch (error) {
+          logChatStageError("persistUserMessage", conversationId, error, false, agentId);
+        }
+      }
+
+      const apiMessages = [
+        ...persistedUserMessage.existingMessages.map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+        { role: "user", content },
+      ];
+
+      const response = await requestChat(apiMessages, conversationId);
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
@@ -201,23 +422,18 @@ export function useChat(agentId?: string, initialConversationId?: string) {
       }
 
       if (fullContent) {
-        const assistantMessage = await createMessage(
-          conversationId,
-          "assistant",
-          fullContent
-        );
+        const assistantMessage = await persistAssistantMessage(conversationId, fullContent);
         setMessages((prev) => [...prev, assistantMessage]);
       }
 
       window.dispatchEvent(new CustomEvent("billing-usage-updated"));
     } catch (error) {
-      console.error("Chat error:", error);
-      toast.error(error instanceof Error ? error.message : "Erro ao enviar mensagem");
+      toast.error(getUserFacingSendErrorMessage(error));
     } finally {
       setIsLoading(false);
       setStreamingContent("");
     }
-  }, [currentConversationId, messages, agentId]);
+  }, [ensureConversation, persistAssistantMessage, persistUserMessage, requestChat]);
 
   const sendAudioMessage = useCallback(async (audio: Blob) => {
     if (!audio.size) return;
@@ -239,6 +455,16 @@ export function useChat(agentId?: string, initialConversationId?: string) {
       await sendMessage(transcript.trim());
     } catch (error) {
       console.error("Audio chat error:", error);
+      void reportFrontendError({
+        category: "chat_audio",
+        stage: "transcribe",
+        message: getErrorMessage(error, "Erro ao transcrever audio"),
+        code: getErrorCode(error) ?? null,
+        metadata: {
+          agentId: agentId ?? null,
+          audioSize: audio.size,
+        },
+      });
       toast.error(error instanceof Error ? error.message : "Erro ao transcrever audio");
       throw error;
     } finally {
