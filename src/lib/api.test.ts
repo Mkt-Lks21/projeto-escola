@@ -208,6 +208,38 @@ describe("api auth headers", () => {
     expect(localStorage.getItem("pendingFrontendErrorLogs")).toBeNull();
   });
 
+  it("retries frontend log insert without conversation_id on FK/UUID errors", async () => {
+    localStorage.setItem("pendingFrontendErrorLogs", JSON.stringify([
+      {
+        category: "chat_send",
+        stage: "persistUserMessage",
+        message: "Nao foi possivel salvar sua mensagem.",
+        conversationId: "conv-1",
+      },
+    ]));
+
+    mockedSupabase.auth.getSession.mockResolvedValue({
+      data: { session: { access_token: "token-123" } },
+      error: null,
+    });
+
+    const insert = vi
+      .fn()
+      .mockResolvedValueOnce({ error: { code: "23503", message: "fk violation" } })
+      .mockResolvedValueOnce({ error: null });
+    mockedSupabase.from.mockReturnValue({ insert });
+
+    await flushPendingFrontendErrorLogs();
+
+    expect(insert).toHaveBeenCalledTimes(2);
+    expect(insert.mock.calls[1][0]).toEqual([
+      expect.objectContaining({
+        conversation_id: null,
+      }),
+    ]);
+    expect(localStorage.getItem("pendingFrontendErrorLogs")).toBeNull();
+  });
+
   it("returns synced frontend logs for the current user", async () => {
     mockedSupabase.auth.getSession.mockResolvedValue({
       data: { session: { access_token: "token-123" } },

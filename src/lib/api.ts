@@ -221,6 +221,30 @@ function buildFrontendErrorLogRow(payload: FrontendErrorLogPayload) {
   };
 }
 
+async function insertFrontendErrorLogRows(rows: Record<string, unknown>[]): Promise<boolean> {
+  const { error } = await supabase.from("frontend_error_logs").insert(rows);
+
+  if (!error) {
+    return true;
+  }
+
+  const code = extractErrorCode(error);
+  const shouldRetryWithoutConversation = (code === "23503" || code === "22P02") &&
+    rows.some((row) => Boolean((row as { conversation_id?: unknown }).conversation_id));
+
+  if (!shouldRetryWithoutConversation) {
+    return false;
+  }
+
+  const sanitizedRows = rows.map((row) => ({
+    ...row,
+    conversation_id: null,
+  }));
+
+  const { error: retryError } = await supabase.from("frontend_error_logs").insert(sanitizedRows);
+  return !retryError;
+}
+
 function normalizeWriteError(
   error: unknown,
   stage: Exclude<FrontendApiErrorStage, "auth">,
@@ -342,9 +366,9 @@ export async function flushPendingFrontendErrorLogs(): Promise<void> {
   }
 
   const rows = pendingEntries.map(buildFrontendErrorLogRow);
-  const { error: insertError } = await supabase.from("frontend_error_logs").insert(rows);
+  const inserted = await insertFrontendErrorLogRows(rows);
 
-  if (!insertError) {
+  if (inserted) {
     writePendingFrontendErrorLogs([]);
   }
 }
@@ -360,9 +384,9 @@ export async function reportFrontendError(payload: FrontendErrorLogPayload): Pro
   }
 
   const rows = nextEntries.map(buildFrontendErrorLogRow);
-  const { error: insertError } = await supabase.from("frontend_error_logs").insert(rows);
+  const inserted = await insertFrontendErrorLogRows(rows);
 
-  if (insertError) {
+  if (!inserted) {
     writePendingFrontendErrorLogs(nextEntries);
     return;
   }
