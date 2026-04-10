@@ -25,6 +25,56 @@ const TRANSCRIPTION_PROMPT =
 export const QUERY_GENERATOR_USER_FRIENDLY_ERROR =
   "Nao consegui montar a consulta agora. Tente reformular sua pergunta com mais contexto (periodo, entidade ou filtro).";
 
+export async function parseChatRequestBody(
+  req: Request,
+  requestId: string,
+): Promise<{ body: Record<string, unknown> } | { response: Response }> {
+  const contentType = (req.headers.get("content-type") || "").toLowerCase();
+
+  if (contentType.includes("multipart/form-data")) {
+    return {
+      response: createJsonResponse(
+        req,
+        {
+          error:
+            "Payload invalido para /chat. Envie JSON com { messages: [...] }. Para audio use /chat/transcribe.",
+          request_id: requestId,
+        },
+        415,
+        { "x-request-id": requestId },
+      ),
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = await req.json();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Payload JSON invalido.";
+    return {
+      response: createJsonResponse(
+        req,
+        { error: `Payload JSON invalido: ${message}`, request_id: requestId },
+        400,
+        { "x-request-id": requestId },
+      ),
+    };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      response: createJsonResponse(
+        req,
+        { error: "Payload JSON deve ser um objeto (ex: { messages: [...] }).", request_id: requestId },
+        400,
+        { "x-request-id": requestId },
+      ),
+    };
+  }
+
+  return { body: parsed as Record<string, unknown> };
+}
+
 function normalizeEnvValue(value: string): string {
   const trimmed = value.trim();
   if (
@@ -359,11 +409,25 @@ export async function handleChatRequest(req: Request): Promise<Response> {
       );
     }
 
-    const body = (await req.json()) as Record<string, unknown>;
+    const parsedBody = await parseChatRequestBody(req, requestId);
+    if ("response" in parsedBody) {
+      return parsedBody.response;
+    }
+    const body = parsedBody.body;
     const messages = normalizeRequestMessages(body?.messages);
     const agentId = typeof body?.agentId === "string" ? body.agentId : null;
     const conversationId = typeof body?.conversationId === "string" ? body.conversationId : null;
     const interactionId = crypto.randomUUID();
+
+    const lastUserMessage = getLastUserMessage(messages);
+    if (!messages.length || !lastUserMessage) {
+      return createJsonResponse(
+        req,
+        { error: "Campo messages obrigatorio (array de mensagens com pelo menos 1 mensagem do usuario).", request_id: requestId },
+        400,
+        { "x-request-id": requestId },
+      );
+    }
 
     if (conversationId) {
       const { data: conversation } = await supabase
@@ -473,7 +537,6 @@ export async function handleChatRequest(req: Request): Promise<Response> {
       agentContext = { agent, tables: agentTables || [] };
     }
 
-    const lastUserMessage = getLastUserMessage(messages);
     const userIntent = detectUserIntent(lastUserMessage);
     const chartAndInsightRequested = detectChartAndInsightIntent(lastUserMessage);
     let totalUsage = emptyUsage();

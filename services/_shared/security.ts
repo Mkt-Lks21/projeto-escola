@@ -101,12 +101,73 @@ export function createJsonResponse(
   });
 }
 
+function normalizeOrigin(origin: string | null): string | null {
+  if (!origin) {
+    return null;
+  }
+
+  try {
+    return new URL(origin).origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function getRequestOriginCandidates(req: Request): string[] {
+  const candidates = new Set<string>();
+  const requestUrlOrigin = normalizeOrigin(req.url);
+  if (requestUrlOrigin) {
+    candidates.add(requestUrlOrigin);
+  }
+
+  const host = req.headers.get("x-forwarded-host") || req.headers.get("host");
+  if (!host) {
+    return [...candidates];
+  }
+
+  const forwardedProto = req.headers
+    .get("x-forwarded-proto")
+    ?.split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+
+  const protocols =
+    forwardedProto && forwardedProto.length > 0
+      ? forwardedProto
+      : requestUrlOrigin
+        ? [new URL(requestUrlOrigin).protocol.replace(":", "")]
+        : ["http"];
+
+  for (const protocol of protocols) {
+    candidates.add(`${protocol}://${host}`.toLowerCase());
+  }
+
+  return [...candidates];
+}
+
+function isAllowedOrigin(origin: string | null, allowedOrigins: string[], req: Request): boolean {
+  const normalizedOrigin = normalizeOrigin(origin);
+  if (!normalizedOrigin) {
+    return false;
+  }
+
+  const normalizedAllowedOrigins = allowedOrigins
+    .map((allowedOrigin) => normalizeOrigin(allowedOrigin))
+    .filter((value): value is string => Boolean(value));
+
+  if (normalizedAllowedOrigins.includes(normalizedOrigin)) {
+    return true;
+  }
+
+  return getRequestOriginCandidates(req).includes(normalizedOrigin);
+}
+
 export function enforceCors(req: Request): Response | null {
   const origin = req.headers.get("origin");
   const allowedOrigins = getAllowedOrigins();
 
   if (req.method === "OPTIONS") {
-    if (origin && allowedOrigins.length > 0 && !allowedOrigins.includes(origin)) {
+    if (origin && allowedOrigins.length > 0 && !isAllowedOrigin(origin, allowedOrigins, req)) {
       return createJsonResponse({ error: "Origin not allowed." }, 403, req);
     }
     return new Response(null, { headers: createCorsHeaders(origin) });
@@ -116,7 +177,7 @@ export function enforceCors(req: Request): Response | null {
     return null;
   }
 
-  if (!allowedOrigins.includes(origin)) {
+  if (!isAllowedOrigin(origin, allowedOrigins, req)) {
     return createJsonResponse({ error: "Origin not allowed." }, 403, req);
   }
 

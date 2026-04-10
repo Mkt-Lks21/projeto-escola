@@ -9,9 +9,11 @@ import {
   detectUserIntent,
   generateSqlQueryWithRetry,
   invokeDelphiProxy,
+  parseChatRequestBody,
   QUERY_GENERATOR_USER_FRIENDLY_ERROR,
   shouldGenerateChartResponse,
 } from "./index.ts";
+import { enforceCors } from "../_shared/security.ts";
 import { generateSqlQuery } from "./queryGenerator.ts";
 
 Deno.test("invokeDelphiProxy forwards the user authorization token and internal proxy key", async () => {
@@ -268,6 +270,125 @@ Deno.test("generateSqlQuery accepts structured fields and joins arrays from prov
   } finally {
     (globalThis as any).fetch = originalFetch;
     (Deno.env as unknown as { get: typeof Deno.env.get }).get = originalEnvGet;
+  }
+});
+
+Deno.test("parseChatRequestBody returns 415 when multipart payload is sent to /chat", async () => {
+  const request = new Request("http://localhost/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "multipart/form-data; boundary=----test",
+    },
+    body: "------test",
+  });
+
+  const result = await parseChatRequestBody(request, "req-1");
+  assert("response" in result);
+  assertEquals(result.response.status, 415);
+  const payload = await result.response.json();
+  assertEquals(payload.request_id, "req-1");
+});
+
+Deno.test("parseChatRequestBody returns 400 when body is invalid JSON", async () => {
+  const request = new Request("http://localhost/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: "{invalid-json",
+  });
+
+  const result = await parseChatRequestBody(request, "req-2");
+  assert("response" in result);
+  assertEquals(result.response.status, 400);
+  const payload = await result.response.json();
+  assertEquals(payload.request_id, "req-2");
+});
+
+Deno.test("parseChatRequestBody returns 400 when payload is not an object", async () => {
+  const request = new Request("http://localhost/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify([{ role: "user", content: "oi" }]),
+  });
+
+  const result = await parseChatRequestBody(request, "req-3");
+  assert("response" in result);
+  assertEquals(result.response.status, 400);
+  const payload = await result.response.json();
+  assertEquals(payload.request_id, "req-3");
+});
+
+Deno.test("parseChatRequestBody returns body when payload is an object", async () => {
+  const request = new Request("http://localhost/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ messages: [{ role: "user", content: "oi" }] }),
+  });
+
+  const result = await parseChatRequestBody(request, "req-4");
+  assert(!("response" in result));
+  assertEquals(typeof result.body, "object");
+});
+
+Deno.test("enforceCors allows same-origin mobile requests on LAN host", () => {
+  const previousAllowedOrigins = Deno.env.get("ALLOWED_ORIGINS");
+  Deno.env.set("ALLOWED_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080");
+
+  try {
+    const request = new Request("http://chat-proxy/chat", {
+      method: "POST",
+      headers: {
+        origin: "http://192.168.0.23:8080",
+        host: "192.168.0.23:8080",
+        "x-forwarded-proto": "http",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ messages: [{ role: "user", content: "oi" }] }),
+    });
+
+    const corsResponse = enforceCors(request);
+    assertEquals(corsResponse, null);
+  } finally {
+    if (previousAllowedOrigins === undefined) {
+      Deno.env.delete("ALLOWED_ORIGINS");
+    } else {
+      Deno.env.set("ALLOWED_ORIGINS", previousAllowedOrigins);
+    }
+  }
+});
+
+Deno.test("enforceCors still blocks foreign origins", async () => {
+  const previousAllowedOrigins = Deno.env.get("ALLOWED_ORIGINS");
+  Deno.env.set("ALLOWED_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080");
+
+  try {
+    const request = new Request("http://chat-proxy/chat", {
+      method: "POST",
+      headers: {
+        origin: "https://evil.example.com",
+        host: "192.168.0.23:8080",
+        "x-forwarded-proto": "http",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ messages: [{ role: "user", content: "oi" }] }),
+    });
+
+    const corsResponse = enforceCors(request);
+    assert(corsResponse instanceof Response);
+    assertEquals(corsResponse.status, 403);
+    const payload = await corsResponse.json();
+    assertEquals(payload.error, "Origin not allowed.");
+  } finally {
+    if (previousAllowedOrigins === undefined) {
+      Deno.env.delete("ALLOWED_ORIGINS");
+    } else {
+      Deno.env.set("ALLOWED_ORIGINS", previousAllowedOrigins);
+    }
   }
 });
 
